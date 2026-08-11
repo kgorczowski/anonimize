@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+# Optional system dependencies (beyond `pip install -r requirements.txt`):
+#   - .rar archives: the 'unrar' (or 'unar'/'bsdtar') tool must be on
+#     PATH. Windows: winget install RARLab.WinRAR
+#   - Scanned PDFs (OCR): the Tesseract OCR engine must be installed.
+#     Windows: winget install UB-Mannheim.TesseractOCR
+# Both are optional: without them, the affected archive/PDF is reported
+# as an error and the rest of the run continues normally.
 
 import argparse
 import json
