@@ -5,8 +5,10 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 # ------------------------------------------------------------
 # Supported file types
@@ -539,31 +541,85 @@ class ProgressBar:
 # Scan
 # ------------------------------------------------------------
 
-def scan_files(source_dir: Path, output_root: Path):
+MAX_ARCHIVE_DEPTH = 10
+
+
+class ScanEntry(NamedTuple):
+    source: Path
+    relative_destination: Path
+
+
+def scan_files(
+    source_dir: Path,
+    output_root: Path,
+    temp_dirs: list,
+    relative_root: Path = None,
+    depth: int = 0,
+):
     """
-    First pass:
-    - recursively find all files
-    - exclude the output directory
-    - return the list so the exact total is known before processing
+    Recursively find all files under source_dir, excluding the output
+    directory. Archives are extracted into fresh temp directories (added
+    to temp_dirs for the caller to clean up) and their contents are
+    folded into the result with a relative_destination that mirrors the
+    archive's location, e.g. bundle.zip -> bundle/<path inside zip>.
+
+    An archive that fails to extract, or that would exceed
+    MAX_ARCHIVE_DEPTH, is returned as-is (to be copied unchanged by the
+    normal file-processing path) instead of raising.
     """
 
-    files = []
+    if relative_root is None:
+        relative_root = Path(".")
 
-    for path in source_dir.rglob("*"):
+    entries = []
+
+    for path in sorted(source_dir.rglob("*")):
         if not path.is_file():
             continue
 
-        # Do not scan our own output directory if it is located
-        # somewhere below source_dir.
         try:
             path.relative_to(output_root)
             continue
         except ValueError:
             pass
 
-        files.append(path)
+        relative_path = relative_root / path.relative_to(source_dir)
 
-    return files
+        if is_archive_file(path):
+            if depth >= MAX_ARCHIVE_DEPTH:
+                entries.append(ScanEntry(path, relative_path))
+                continue
+
+            extract_dir = Path(tempfile.mkdtemp(prefix="anonymize_"))
+
+            try:
+                extract_archive(path, extract_dir)
+            except Exception as exc:
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                print(
+                    f"ERROR: cannot extract {path}: {exc}",
+                    file=sys.stderr,
+                )
+                entries.append(ScanEntry(path, relative_path))
+                continue
+
+            temp_dirs.append(extract_dir)
+            nested_root = relative_path.with_name(archive_stem(path))
+
+            entries.extend(
+                scan_files(
+                    extract_dir,
+                    output_root,
+                    temp_dirs,
+                    relative_root=nested_root,
+                    depth=depth + 1,
+                )
+            )
+            continue
+
+        entries.append(ScanEntry(path, relative_path))
+
+    return entries
 
 
 # ------------------------------------------------------------
@@ -718,106 +774,115 @@ def main():
 
     scan_start = time.monotonic()
 
-    files = scan_files(
-        source_dir,
-        output_root,
-    )
+    temp_dirs = []
 
-    scan_duration = time.monotonic() - scan_start
-
-    print(
-        f"Found {len(files):,} files "
-        f"in {format_duration(scan_duration)}."
-    )
-    print()
-
-    if not files:
-        print("Nothing to process.")
-        return
-
-    # --------------------------------------------------------
-    # PASS 2 - processing
-    # --------------------------------------------------------
-
-    output_root.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    progress = ProgressBar(
-        total=len(files)
-    )
-
-    processed = 0
-    anonymized = 0
-    office_converted = 0
-    copied = 0
-    errors = 0
-    pii_redacted = 0
-
-    processing_start = time.monotonic()
-
-    for source in files:
-        relative_path = source.relative_to(source_dir)
-        destination = output_root / relative_path
-
-        try:
-            result, pii_count = process_file(
-                source,
-                destination,
-                replacements,
-            )
-
-            pii_redacted += pii_count
-
-            if result == "anonymized":
-                anonymized += 1
-            elif result == "office":
-                office_converted += 1
-            else:
-                copied += 1
-
-        except Exception as exc:
-            errors += 1
-
-            print()
-            print(
-                f"ERROR: {source}: {exc}",
-                file=sys.stderr,
-            )
-
-        processed += 1
-
-        progress.update(
-            processed,
-            source.relative_to(source_dir),
+    try:
+        files = scan_files(
+            source_dir,
+            output_root,
+            temp_dirs,
         )
 
-    progress.finish()
+        archives_extracted = len(temp_dirs)
 
-    duration = time.monotonic() - processing_start
+        scan_duration = time.monotonic() - scan_start
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
+        print(
+            f"Found {len(files):,} files "
+            f"in {format_duration(scan_duration)}."
+        )
+        print()
 
-    print()
-    print("==============================================")
-    print(" DONE")
-    print("==============================================")
-    print()
-    print(f"Files found       : {len(files):,}")
-    print(f"Files processed   : {processed:,}")
-    print(f"Text/code         : {anonymized:,}")
-    print(f"Office -> Markdown: {office_converted:,}")
-    print(f"Copied unchanged  : {copied:,}")
-    print(f"PII fragments     : {pii_redacted:,}")
-    print(f"Errors            : {errors:,}")
-    print(f"Processing time   : {format_duration(duration)}")
-    print()
-    print(f"Output directory:")
-    print(output_root)
-    print()
+        if not files:
+            print("Nothing to process.")
+            return
+
+        # --------------------------------------------------------
+        # PASS 2 - processing
+        # --------------------------------------------------------
+
+        output_root.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        progress = ProgressBar(
+            total=len(files)
+        )
+
+        processed = 0
+        anonymized = 0
+        office_converted = 0
+        copied = 0
+        errors = 0
+        pii_redacted = 0
+
+        processing_start = time.monotonic()
+
+        for entry in files:
+            destination = output_root / entry.relative_destination
+
+            try:
+                result, pii_count = process_file(
+                    entry.source,
+                    destination,
+                    replacements,
+                )
+
+                pii_redacted += pii_count
+
+                if result == "anonymized":
+                    anonymized += 1
+                elif result == "office":
+                    office_converted += 1
+                else:
+                    copied += 1
+
+            except Exception as exc:
+                errors += 1
+
+                print()
+                print(
+                    f"ERROR: {entry.source}: {exc}",
+                    file=sys.stderr,
+                )
+
+            processed += 1
+
+            progress.update(
+                processed,
+                entry.relative_destination,
+            )
+
+        progress.finish()
+
+        duration = time.monotonic() - processing_start
+
+        # --------------------------------------------------------
+        # Summary
+        # --------------------------------------------------------
+
+        print()
+        print("==============================================")
+        print(" DONE")
+        print("==============================================")
+        print()
+        print(f"Files found       : {len(files):,}")
+        print(f"Files processed   : {processed:,}")
+        print(f"Archives extracted: {archives_extracted:,}")
+        print(f"Text/code         : {anonymized:,}")
+        print(f"Office -> Markdown: {office_converted:,}")
+        print(f"Copied unchanged  : {copied:,}")
+        print(f"PII fragments     : {pii_redacted:,}")
+        print(f"Errors            : {errors:,}")
+        print(f"Processing time   : {format_duration(duration)}")
+        print()
+        print(f"Output directory:")
+        print(output_root)
+        print()
+    finally:
+        for temp_dir in temp_dirs:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

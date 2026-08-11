@@ -1,5 +1,6 @@
 import zipfile
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,8 @@ from anonymize import (
     archive_stem,
     is_archive_file,
     extract_archive,
+    scan_files,
+    MAX_ARCHIVE_DEPTH,
 )
 
 
@@ -101,3 +104,94 @@ def test_extract_archive_raises_on_corrupt_rar(tmp_path):
 
     with pytest.raises(Exception):
         extract_archive(source, tmp_path / "extracted")
+
+
+def test_scan_files_returns_plain_files_with_matching_relative_path(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "a.txt").write_text("hello")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs)
+
+    assert len(entries) == 1
+    assert entries[0].source == source_dir / "a.txt"
+    assert entries[0].relative_destination == Path("a.txt")
+    assert temp_dirs == []
+
+
+def test_scan_files_extracts_zip_and_maps_relative_destination(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+
+    with zipfile.ZipFile(source_dir / "bundle.zip", "w") as archive:
+        archive.writestr("inner.txt", "from zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs)
+
+    assert len(entries) == 1
+    assert entries[0].relative_destination == Path("bundle/inner.txt")
+    assert entries[0].source.read_text() == "from zip"
+    assert len(temp_dirs) == 1
+
+
+def test_scan_files_extracts_nested_zip(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+
+    inner_zip_bytes_path = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner_zip_bytes_path, "w") as inner:
+        inner.writestr("deep.txt", "deep content")
+
+    with zipfile.ZipFile(source_dir / "outer.zip", "w") as outer:
+        outer.write(inner_zip_bytes_path, arcname="inner.zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs)
+
+    assert len(entries) == 1
+    assert entries[0].relative_destination == Path("outer/inner/deep.txt")
+    assert len(temp_dirs) == 2  # outer.zip's extraction + inner.zip's
+
+
+def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+
+    with zipfile.ZipFile(source_dir / "bundle.zip", "w") as archive:
+        archive.writestr("inner.txt", "from zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+
+    entries = scan_files(
+        source_dir, output_root, temp_dirs, depth=MAX_ARCHIVE_DEPTH
+    )
+
+    assert len(entries) == 1
+    assert entries[0].source == source_dir / "bundle.zip"
+    assert entries[0].relative_destination == Path("bundle.zip")
+    assert temp_dirs == []
+
+
+def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "broken.zip").write_bytes(b"not a real zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs)
+
+    assert len(entries) == 1
+    assert entries[0].source == source_dir / "broken.zip"
+    assert entries[0].relative_destination == Path("broken.zip")
+    assert temp_dirs == []
