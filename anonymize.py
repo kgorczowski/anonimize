@@ -787,6 +787,18 @@ def process_file(
 
         return "office", pii_count
 
+    # PDF -> MD
+    if suffix == ".pdf":
+        markdown = convert_pdf_to_markdown(source)
+        markdown = anonymize_text(markdown, replacements)
+        markdown, pii_count = redact_pii(markdown)
+
+        destination = destination.with_suffix(".md")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(markdown, encoding="utf-8")
+
+        return "pdf", pii_count
+
     # Unknown/binary file:
     # Copy it unchanged.
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -915,6 +927,7 @@ def main():
         processed = 0
         anonymized = 0
         office_converted = 0
+        pdf_converted = 0
         copied = 0
         errors = 0
         pii_redacted = 0
@@ -937,6 +950,8 @@ def main():
                     anonymized += 1
                 elif result == "office":
                     office_converted += 1
+                elif result == "pdf":
+                    pdf_converted += 1
                 else:
                     copied += 1
 
@@ -976,6 +991,7 @@ def main():
         print(f"Archives extracted: {archives_extracted:,}")
         print(f"Text/code         : {anonymized:,}")
         print(f"Office -> Markdown: {office_converted:,}")
+        print(f"PDF -> Markdown   : {pdf_converted:,}")
         print(f"Copied unchanged  : {copied:,}")
         print(f"PII fragments     : {pii_redacted:,}")
         print(f"Errors            : {errors:,}")
