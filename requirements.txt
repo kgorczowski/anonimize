@@ -2,3 +2,5 @@ python-docx
 openpyxl
 python-pptx
 pytest
+py7zr
+rarfile

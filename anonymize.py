@@ -356,6 +356,105 @@ def is_office_file(path: Path) -> bool:
 
 
 # ------------------------------------------------------------
+# Archive handling
+# ------------------------------------------------------------
+
+ARCHIVE_SUFFIXES = (
+    (".tar.gz", "tar"),
+    (".tar.bz2", "tar"),
+    (".tar.xz", "tar"),
+    (".tgz", "tar"),
+    (".tbz2", "tar"),
+    (".txz", "tar"),
+    (".tar", "tar"),
+    (".zip", "zip"),
+    (".7z", "7z"),
+    (".rar", "rar"),
+)
+
+
+def classify_archive(path: Path):
+    name = path.name.lower()
+
+    for suffix, kind in ARCHIVE_SUFFIXES:
+        if name.endswith(suffix):
+            return kind
+
+    return None
+
+
+def archive_stem(path: Path) -> str:
+    name = path.name
+
+    for suffix, _kind in ARCHIVE_SUFFIXES:
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+
+    return path.stem
+
+
+def is_archive_file(path: Path) -> bool:
+    return classify_archive(path) is not None
+
+
+def extract_archive(source: Path, dest_dir: Path) -> None:
+    kind = classify_archive(source)
+
+    if kind == "zip":
+        import zipfile
+
+        with zipfile.ZipFile(source) as archive:
+            archive.extractall(dest_dir)
+        return
+
+    if kind == "tar":
+        import tarfile
+
+        with tarfile.open(source) as archive:
+            try:
+                archive.extractall(dest_dir, filter="data")
+            except TypeError:
+                # Python < 3.12 does not support the `filter` argument.
+                archive.extractall(dest_dir)
+        return
+
+    if kind == "7z":
+        try:
+            import py7zr
+        except ImportError:
+            raise RuntimeError(
+                "Missing py7zr. Install it with: pip install py7zr"
+            )
+
+        with py7zr.SevenZipFile(source, mode="r") as archive:
+            archive.extractall(dest_dir)
+        return
+
+    if kind == "rar":
+        try:
+            import rarfile
+        except ImportError:
+            raise RuntimeError(
+                "Missing rarfile. Install it with: pip install rarfile"
+            )
+
+        try:
+            with rarfile.RarFile(source) as archive:
+                archive.extractall(dest_dir)
+        except rarfile.NeedFirstVolume:
+            raise
+        except rarfile.Error as exc:
+            raise RuntimeError(
+                "Cannot extract RAR archive. This usually means the "
+                "'unrar' tool is not installed and on PATH, or the "
+                f"archive is corrupt/password-protected: {exc}"
+            ) from exc
+        return
+
+    raise ValueError(f"Not a supported archive: {source}")
+
+
+# ------------------------------------------------------------
 # Progress bar
 # ------------------------------------------------------------
 
