@@ -386,7 +386,7 @@ def ocr_page(page) -> str:
 
 def convert_pdf_to_markdown(source: Path) -> str:
     try:
-        import fitz
+        import pymupdf as fitz
     except ImportError:
         raise RuntimeError(
             "Missing pymupdf. Install it with: pip install pymupdf"

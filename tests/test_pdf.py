@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-fitz = pytest.importorskip("fitz")
+fitz = pytest.importorskip("pymupdf")
 
 from anonymize import convert_pdf_to_markdown
 
