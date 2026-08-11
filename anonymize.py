@@ -486,54 +486,58 @@ def process_file(
             # Keep binary/non-UTF8 files untouched.
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            return "copied-non-utf8"
+            return "copied-non-utf8", 0
 
         text = anonymize_text(text, replacements)
+        text, pii_count = redact_pii(text)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text, encoding="utf-8")
 
-        return "anonymized"
+        return "anonymized", pii_count
 
     # DOCX -> MD
     if suffix == ".docx":
         markdown = convert_docx_to_markdown(source)
         markdown = anonymize_text(markdown, replacements)
+        markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office"
+        return "office", pii_count
 
     # XLSX -> MD
     if suffix == ".xlsx":
         markdown = convert_xlsx_to_markdown(source)
         markdown = anonymize_text(markdown, replacements)
+        markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office"
+        return "office", pii_count
 
     # PPTX -> MD
     if suffix == ".pptx":
         markdown = convert_pptx_to_markdown(source)
         markdown = anonymize_text(markdown, replacements)
+        markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office"
+        return "office", pii_count
 
     # Unknown/binary file:
     # Copy it unchanged.
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 
-    return "copied"
+    return "copied", 0
 
 
 # ------------------------------------------------------------
@@ -650,6 +654,7 @@ def main():
     office_converted = 0
     copied = 0
     errors = 0
+    pii_redacted = 0
 
     processing_start = time.monotonic()
 
@@ -658,11 +663,13 @@ def main():
         destination = output_root / relative_path
 
         try:
-            result = process_file(
+            result, pii_count = process_file(
                 source,
                 destination,
                 replacements,
             )
+
+            pii_redacted += pii_count
 
             if result == "anonymized":
                 anonymized += 1
@@ -705,6 +712,7 @@ def main():
     print(f"Text/code         : {anonymized:,}")
     print(f"Office -> Markdown: {office_converted:,}")
     print(f"Copied unchanged  : {copied:,}")
+    print(f"PII fragments     : {pii_redacted:,}")
     print(f"Errors            : {errors:,}")
     print(f"Processing time   : {format_duration(duration)}")
     print()
