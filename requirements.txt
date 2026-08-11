@@ -5,3 +5,5 @@ pymupdf
 pytest
 py7zr
 rarfile
+pytesseract
+Pillow

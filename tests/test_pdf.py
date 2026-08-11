@@ -50,3 +50,39 @@ def test_convert_pdf_to_markdown_labels_multiple_pages(tmp_path):
     assert "Page one text" in markdown
     assert "# Page 2" in markdown
     assert "Page two text" in markdown
+
+
+def _tesseract_available() -> bool:
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _tesseract_available(), reason="Tesseract OCR not installed"
+)
+def test_convert_pdf_to_markdown_ocrs_scanned_page(tmp_path):
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (600, 200), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((20, 80), "SCANNED TEXT", fill="black")
+
+    image_path = tmp_path / "scan.png"
+    image.save(image_path)
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_image(fitz.Rect(0, 0, 600, 200), filename=str(image_path))
+
+    pdf_path = tmp_path / "scan.pdf"
+    document.save(pdf_path)
+    document.close()
+
+    markdown = convert_pdf_to_markdown(pdf_path)
+
+    assert "SCANNED" in markdown.upper()

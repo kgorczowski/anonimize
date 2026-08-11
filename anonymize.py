@@ -381,7 +381,28 @@ def extract_pdf_tables(page) -> list:
 
 
 def ocr_page(page) -> str:
-    raise RuntimeError("OCR fallback not implemented yet")
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError(
+            "Missing OCR dependencies. Install them with: "
+            "pip install pytesseract Pillow"
+        )
+
+    pixmap = page.get_pixmap(dpi=300)
+    image = Image.frombytes(
+        "RGB", (pixmap.width, pixmap.height), pixmap.samples
+    )
+
+    try:
+        return pytesseract.image_to_string(image).strip()
+    except pytesseract.TesseractNotFoundError as exc:
+        raise RuntimeError(
+            "Tesseract OCR engine not found. Install it and make sure "
+            "it is on PATH. On Windows: "
+            "winget install UB-Mannheim.TesseractOCR"
+        ) from exc
 
 
 def convert_pdf_to_markdown(source: Path) -> str:
