@@ -7,6 +7,11 @@
 #     Windows: winget install UB-Mannheim.TesseractOCR
 # Both are optional: without them, the affected archive/PDF is reported
 # as an error and the rest of the run continues normally.
+#
+# Known limitation: PII detection is regex-based and heuristic. In
+# particular, four-part version strings ("1.0.0.0" in .cs/.json/.xml or
+# build config files) are indistinguishable from IPv4 addresses and are
+# redacted as [IP].
 
 import argparse
 import json
@@ -16,7 +21,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 # ------------------------------------------------------------
 # Supported file types
@@ -153,11 +158,29 @@ def validate_luhn(number: str) -> bool:
 
 EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 
+# Only a literal space or dash may separate the digit groups. Using \s
+# here would let a "phone number" span newlines and collapse several
+# unrelated lines of a document into a single [PHONE] token.
 PHONE_PATTERN = re.compile(
-    r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]?\d{3}[\s-]?\d{3}(?!\d)"
+    r"(?<!\d)(?:\+48[ -]?)?\d{3}[ -]?\d{3}[ -]?\d{3}(?!\d)"
 )
 
-IBAN_PATTERN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+# IBANs are printed either contiguously ("PL6110901014...", sometimes
+# lowercase) or - far more commonly - grouped in fours
+# ("PL61 1090 1014 0000 0712 1981 2874"). Both forms must be matched as
+# one span; otherwise CARD_PATTERN grabs the 16 digits in the middle and
+# the country code and the tail of the account number leak in cleartext.
+# The optional short final group (for IBAN lengths that are not a
+# multiple of four, e.g. German 22-character ones) is only taken when it
+# is not a plain word, so an IBAN followed by ordinary prose
+# ("... 2874 w PKO") is not swallowed into an unvalidatable match.
+IBAN_PATTERN = re.compile(
+    r"\b[A-Za-z]{2}\d{2}"
+    r"(?:"
+    r"[A-Za-z0-9]{10,30}"
+    r"|(?:[ ][A-Za-z0-9]{4}){2,8}(?:[ ](?![A-Za-z]+\b)[A-Za-z0-9]{1,3})?"
+    r")\b"
+)
 
 CARD_PATTERN = re.compile(
     r"(?<!\d)(?:\d{4}[ -]?){3}\d{4}(?!\d)|(?<!\d)\d{13,19}(?!\d)"
@@ -167,6 +190,10 @@ PESEL_PATTERN = re.compile(r"(?<!\d)\d{11}(?!\d)")
 
 NIP_PATTERN = re.compile(r"(?<!\d)\d{10}(?!\d)")
 
+# Known, accepted trade-off: this also matches four-part version strings
+# such as assembly/package versions ("1.0.0.0", "2.1.0.3") in .cs/.json/
+# .xml/build files. Excluding them risks missing real addresses, so the
+# false positive is accepted rather than pattern-matched away.
 IPV4_PATTERN = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
 )
@@ -186,7 +213,7 @@ PII_PATTERNS = (
 )
 
 
-def redact_pii(text: str) -> tuple:
+def redact_pii(text: str) -> tuple[str, int]:
     total = 0
 
     for label, pattern, validator in PII_PATTERNS:
@@ -477,7 +504,7 @@ ARCHIVE_SUFFIXES = (
 )
 
 
-def classify_archive(path: Path):
+def classify_archive(path: Path) -> Optional[str]:
     name = path.name.lower()
 
     for suffix, kind in ARCHIVE_SUFFIXES:
@@ -492,7 +519,16 @@ def archive_stem(path: Path) -> str:
 
     for suffix, _kind in ARCHIVE_SUFFIXES:
         if name.lower().endswith(suffix):
-            return name[: -len(suffix)]
+            stem = name[: -len(suffix)]
+
+            # A member literally named ".zip" (or "..zip") strips down to
+            # an empty or dot-only stem, which is not a usable path
+            # component - Path.with_name() rejects it and the whole run
+            # would abort. Fall back to something non-empty instead.
+            if stem and stem not in (".", ".."):
+                return stem
+
+            return path.stem or name
 
     return path.stem
 
@@ -518,7 +554,23 @@ def extract_archive(source: Path, dest_dir: Path) -> None:
             try:
                 archive.extractall(dest_dir, filter="data")
             except TypeError:
-                # Python < 3.12 does not support the `filter` argument.
+                # Python < 3.12 does not support the `filter` argument,
+                # and extracting unfiltered would let a crafted member
+                # ("../../evil") write outside dest_dir - outside the
+                # temp tree main() cleans up. Check every member first.
+                dest_root = Path(dest_dir).resolve()
+
+                for member in archive.getmembers():
+                    member_path = (dest_root / member.name).resolve()
+
+                    if (
+                        dest_root != member_path
+                        and dest_root not in member_path.parents
+                    ):
+                        raise ValueError(
+                            f"Unsafe path in tar archive: {member.name}"
+                        )
+
                 archive.extractall(dest_dir)
         return
 
@@ -693,6 +745,13 @@ def scan_files(
 
         if is_archive_file(path):
             if depth >= MAX_ARCHIVE_DEPTH:
+                # Deliberate policy fallback, not a failure: logged, but
+                # never added to extraction_errors.
+                print(
+                    f"WARNING: archive nesting exceeds depth limit "
+                    f"({MAX_ARCHIVE_DEPTH}), copying unchanged: {path}",
+                    file=sys.stderr,
+                )
                 entries.append(ScanEntry(path, relative_path))
                 continue
 
@@ -730,6 +789,55 @@ def scan_files(
     return entries
 
 
+def deduplicate_destinations(entries: list) -> list:
+    """
+    Make every relative_destination in `entries` unique.
+
+    Archive contents are folded into the output under the archive's stem
+    (bundle.zip -> bundle/), so an archive can collide with a plain
+    sibling directory of the same name, and two archives can share a stem
+    (data.zip and data.tar.gz). Without this step the second writer
+    silently overwrites the first and files disappear from the output.
+
+    Colliding entries keep their position but get "__2", "__3", ...
+    appended to the final path component, and the collision is logged.
+    """
+
+    seen = set()
+    result = []
+
+    for entry in entries:
+        destination = entry.relative_destination
+
+        if destination not in seen:
+            seen.add(destination)
+            result.append(entry)
+            continue
+
+        counter = 2
+
+        while True:
+            candidate = destination.with_name(
+                f"{destination.stem}__{counter}{destination.suffix}"
+            )
+
+            if candidate not in seen:
+                break
+
+            counter += 1
+
+        print(
+            f"WARNING: output path collision, writing "
+            f"{entry.source} to {candidate} instead of {destination}",
+            file=sys.stderr,
+        )
+
+        seen.add(candidate)
+        result.append(entry._replace(relative_destination=candidate))
+
+    return result
+
+
 # ------------------------------------------------------------
 # Process one file
 # ------------------------------------------------------------
@@ -738,7 +846,7 @@ def process_file(
     source: Path,
     destination: Path,
     replacements: dict,
-):
+) -> tuple[str, int]:
     suffix = source.suffix.lower()
 
     # Text/code files
@@ -905,6 +1013,11 @@ def main():
             extraction_errors,
         )
 
+        # An extracted archive can land on the same output path as a
+        # plain sibling (data.zip next to data/) or as another archive
+        # with the same stem. Rename instead of silently overwriting.
+        files = deduplicate_destinations(files)
+
         archives_extracted = len(temp_dirs)
 
         scan_duration = time.monotonic() - scan_start
@@ -971,6 +1084,16 @@ def main():
                     f"ERROR: {entry.source}: {exc}",
                     file=sys.stderr,
                 )
+
+                # A file that cannot be processed is copied unchanged
+                # rather than dropped from the output entirely. The
+                # error is already counted and logged, so a failing
+                # fallback must not abort the run either.
+                try:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(entry.source, destination)
+                except Exception:
+                    pass
 
             processed += 1
 

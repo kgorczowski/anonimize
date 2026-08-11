@@ -61,6 +61,42 @@ def test_redact_pii_masks_iban():
     assert count == 1
 
 
+def test_redact_pii_masks_iban_printed_in_groups_of_four():
+    """
+    The standard printed form. Before the IBAN pattern accepted spaces,
+    CARD_PATTERN grabbed the 16 digits in the middle and the country
+    code, check digits and account tail leaked in cleartext.
+    """
+    text, count = redact_pii("IBAN: PL61 1090 1014 0000 0712 1981 2874")
+    assert text == "IBAN: [IBAN]"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
+def test_redact_pii_masks_lowercase_iban():
+    text, count = redact_pii("IBAN: pl61109010140000071219812874")
+    assert text == "IBAN: [IBAN]"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
+def test_redact_pii_masks_grouped_iban_followed_by_prose():
+    text, count = redact_pii(
+        "Konto PL61 1090 1014 0000 0712 1981 2874 w PKO"
+    )
+    assert text == "Konto [IBAN] w PKO"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
+def test_redact_pii_masks_grouped_iban_with_short_final_group():
+    # 22-character German IBAN: the last printed group is 2 chars long.
+    text, count = redact_pii("Konto DE89 3704 0044 0532 0130 00 w banku")
+    assert text == "Konto [IBAN] w banku"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
 def test_redact_pii_masks_card_number_with_spaces():
     text, count = redact_pii("Card 4111 1111 1111 1111 exp 12/30")
     assert text == "Card [CARD] exp 12/30"
@@ -77,6 +113,23 @@ def test_redact_pii_masks_phone_number():
     text, count = redact_pii("Zadzwon: +48 123 456 789 dzisiaj")
     assert text == "Zadzwon: [PHONE] dzisiaj"
     assert count == 1
+
+
+def test_redact_pii_does_not_merge_digits_across_newlines():
+    """
+    \\s in the phone pattern used to match newlines, so three separate
+    lines of numbers collapsed into a single [PHONE] token and the
+    document structure was destroyed.
+    """
+    text, count = redact_pii("Counts:\n100\n200\n300\ndone\n")
+    assert text == "Counts:\n100\n200\n300\ndone\n"
+    assert count == 0
+
+
+def test_redact_pii_does_not_merge_digits_across_tabs():
+    text, count = redact_pii("a\t100\t200\t300\tb")
+    assert text == "a\t100\t200\t300\tb"
+    assert count == 0
 
 
 def test_redact_pii_returns_zero_for_clean_text():
