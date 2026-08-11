@@ -138,6 +138,63 @@ def validate_luhn(number: str) -> bool:
 
 
 # ------------------------------------------------------------
+# PII detection
+# ------------------------------------------------------------
+
+EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+
+PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]?\d{3}[\s-]?\d{3}(?!\d)"
+)
+
+IBAN_PATTERN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+
+CARD_PATTERN = re.compile(
+    r"(?<!\d)(?:\d{4}[ -]?){3}\d{4}(?!\d)|(?<!\d)\d{13,19}(?!\d)"
+)
+
+PESEL_PATTERN = re.compile(r"(?<!\d)\d{11}(?!\d)")
+
+NIP_PATTERN = re.compile(r"(?<!\d)\d{10}(?!\d)")
+
+IPV4_PATTERN = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+)
+
+PII_PATTERNS = (
+    ("EMAIL", EMAIL_PATTERN, None),
+    ("IP", IPV4_PATTERN, None),
+    ("IBAN", IBAN_PATTERN, validate_iban),
+    (
+        "CARD",
+        CARD_PATTERN,
+        lambda raw: validate_luhn(re.sub(r"[ -]", "", raw)),
+    ),
+    ("PESEL", PESEL_PATTERN, validate_pesel),
+    ("NIP", NIP_PATTERN, validate_nip),
+    ("PHONE", PHONE_PATTERN, None),
+)
+
+
+def redact_pii(text: str) -> tuple:
+    total = 0
+
+    for label, pattern, validator in PII_PATTERNS:
+        def replace(match, label=label, validator=validator):
+            nonlocal total
+
+            if validator is not None and not validator(match.group(0)):
+                return match.group(0)
+
+            total += 1
+            return f"[{label}]"
+
+        text = pattern.sub(replace, text)
+
+    return text, total
+
+
+# ------------------------------------------------------------
 # Office -> Markdown
 # ------------------------------------------------------------
 
