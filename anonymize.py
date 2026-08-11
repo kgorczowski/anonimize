@@ -68,6 +68,76 @@ def anonymize_text(text: str, replacements: dict) -> str:
 
 
 # ------------------------------------------------------------
+# PII checksum validators
+# ------------------------------------------------------------
+
+def validate_pesel(number: str) -> bool:
+    if not re.fullmatch(r"\d{11}", number):
+        return False
+
+    weights = (1, 3, 7, 9, 1, 3, 7, 9, 1, 3)
+    checksum = sum(
+        int(digit) * weight
+        for digit, weight in zip(number, weights)
+    )
+    check_digit = (10 - checksum % 10) % 10
+
+    return check_digit == int(number[10])
+
+
+def validate_nip(number: str) -> bool:
+    if not re.fullmatch(r"\d{10}", number):
+        return False
+
+    weights = (6, 5, 7, 2, 3, 4, 5, 6, 7)
+    checksum = sum(
+        int(digit) * weight
+        for digit, weight in zip(number, weights)
+    )
+    check_digit = checksum % 11
+
+    if check_digit == 10:
+        return False
+
+    return check_digit == int(number[9])
+
+
+def validate_iban(code: str) -> bool:
+    code = code.replace(" ", "").upper()
+
+    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{10,30}", code):
+        return False
+
+    rearranged = code[4:] + code[:4]
+
+    try:
+        digits = "".join(str(int(char, 36)) for char in rearranged)
+    except ValueError:
+        return False
+
+    return int(digits) % 97 == 1
+
+
+def validate_luhn(number: str) -> bool:
+    if not re.fullmatch(r"\d{13,19}", number):
+        return False
+
+    total = 0
+
+    for index, digit in enumerate(reversed(number)):
+        value = int(digit)
+
+        if index % 2 == 1:
+            value *= 2
+            if value > 9:
+                value -= 9
+
+        total += value
+
+    return total % 10 == 0
+
+
+# ------------------------------------------------------------
 # Office -> Markdown
 # ------------------------------------------------------------
 
