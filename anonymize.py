@@ -345,6 +345,79 @@ def convert_pptx_to_markdown(source: Path) -> str:
     return "\n".join(result)
 
 
+def extract_pdf_tables(page) -> list:
+    if not hasattr(page, "find_tables"):
+        return []
+
+    def cell_to_string(value):
+        if value is None:
+            return ""
+        return str(value).replace("\n", " ").replace("|", r"\|")
+
+    tables = []
+
+    for table in page.find_tables().tables:
+        rows = table.extract()
+
+        if not rows:
+            continue
+
+        header = [cell_to_string(cell) for cell in rows[0]]
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join("---" for _ in header) + " |",
+        ]
+
+        for row in rows[1:]:
+            lines.append(
+                "| "
+                + " | ".join(cell_to_string(cell) for cell in row)
+                + " |"
+            )
+
+        tables.append(lines)
+
+    return tables
+
+
+def ocr_page(page) -> str:
+    raise RuntimeError("OCR fallback not implemented yet")
+
+
+def convert_pdf_to_markdown(source: Path) -> str:
+    try:
+        import fitz
+    except ImportError:
+        raise RuntimeError(
+            "Missing pymupdf. Install it with: pip install pymupdf"
+        )
+
+    document = fitz.open(source)
+    result = []
+
+    try:
+        for page_number, page in enumerate(document, start=1):
+            result.append(f"# Page {page_number}")
+            result.append("")
+
+            text = page.get_text().strip()
+
+            if len(text) < 10:
+                text = ocr_page(page)
+
+            if text:
+                result.append(text)
+                result.append("")
+
+            for table_lines in extract_pdf_tables(page):
+                result.extend(table_lines)
+                result.append("")
+    finally:
+        document.close()
+
+    return "\n".join(result)
+
+
 # ------------------------------------------------------------
 # File classification
 # ------------------------------------------------------------
