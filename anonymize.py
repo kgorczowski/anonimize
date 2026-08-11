@@ -553,6 +553,7 @@ def scan_files(
     source_dir: Path,
     output_root: Path,
     temp_dirs: list,
+    extraction_errors: list,
     relative_root: Path = None,
     depth: int = 0,
 ):
@@ -565,7 +566,10 @@ def scan_files(
 
     An archive that fails to extract, or that would exceed
     MAX_ARCHIVE_DEPTH, is returned as-is (to be copied unchanged by the
-    normal file-processing path) instead of raising.
+    normal file-processing path) instead of raising. Extraction failures
+    (but not depth-limit fallbacks, which are not errors) are appended to
+    extraction_errors so the caller can fold them into its own error
+    count.
     """
 
     if relative_root is None:
@@ -600,6 +604,7 @@ def scan_files(
                     f"ERROR: cannot extract {path}: {exc}",
                     file=sys.stderr,
                 )
+                extraction_errors.append(path)
                 entries.append(ScanEntry(path, relative_path))
                 continue
 
@@ -611,6 +616,7 @@ def scan_files(
                     extract_dir,
                     output_root,
                     temp_dirs,
+                    extraction_errors,
                     relative_root=nested_root,
                     depth=depth + 1,
                 )
@@ -775,12 +781,14 @@ def main():
     scan_start = time.monotonic()
 
     temp_dirs = []
+    extraction_errors = []
 
     try:
         files = scan_files(
             source_dir,
             output_root,
             temp_dirs,
+            extraction_errors,
         )
 
         archives_extracted = len(temp_dirs)
@@ -857,6 +865,8 @@ def main():
         progress.finish()
 
         duration = time.monotonic() - processing_start
+
+        errors += len(extraction_errors)
 
         # --------------------------------------------------------
         # Summary

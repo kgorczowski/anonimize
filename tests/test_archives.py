@@ -113,13 +113,15 @@ def test_scan_files_returns_plain_files_with_matching_relative_path(tmp_path):
 
     output_root = tmp_path / "out"
     temp_dirs = []
+    extraction_errors = []
 
-    entries = scan_files(source_dir, output_root, temp_dirs)
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
     assert len(entries) == 1
     assert entries[0].source == source_dir / "a.txt"
     assert entries[0].relative_destination == Path("a.txt")
     assert temp_dirs == []
+    assert extraction_errors == []
 
 
 def test_scan_files_extracts_zip_and_maps_relative_destination(tmp_path):
@@ -131,13 +133,15 @@ def test_scan_files_extracts_zip_and_maps_relative_destination(tmp_path):
 
     output_root = tmp_path / "out"
     temp_dirs = []
+    extraction_errors = []
 
-    entries = scan_files(source_dir, output_root, temp_dirs)
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
     assert len(entries) == 1
     assert entries[0].relative_destination == Path("bundle/inner.txt")
     assert entries[0].source.read_text() == "from zip"
     assert len(temp_dirs) == 1
+    assert extraction_errors == []
 
 
 def test_scan_files_extracts_nested_zip(tmp_path):
@@ -153,12 +157,14 @@ def test_scan_files_extracts_nested_zip(tmp_path):
 
     output_root = tmp_path / "out"
     temp_dirs = []
+    extraction_errors = []
 
-    entries = scan_files(source_dir, output_root, temp_dirs)
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
     assert len(entries) == 1
     assert entries[0].relative_destination == Path("outer/inner/deep.txt")
     assert len(temp_dirs) == 2  # outer.zip's extraction + inner.zip's
+    assert extraction_errors == []
 
 
 def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path):
@@ -170,15 +176,23 @@ def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path):
 
     output_root = tmp_path / "out"
     temp_dirs = []
+    extraction_errors = []
 
     entries = scan_files(
-        source_dir, output_root, temp_dirs, depth=MAX_ARCHIVE_DEPTH
+        source_dir,
+        output_root,
+        temp_dirs,
+        extraction_errors,
+        depth=MAX_ARCHIVE_DEPTH,
     )
 
     assert len(entries) == 1
     assert entries[0].source == source_dir / "bundle.zip"
     assert entries[0].relative_destination == Path("bundle.zip")
     assert temp_dirs == []
+    # Hitting the depth limit is a deliberate policy fallback, not a
+    # failure - it must not be counted as an extraction error.
+    assert extraction_errors == []
 
 
 def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
@@ -188,10 +202,58 @@ def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
 
     output_root = tmp_path / "out"
     temp_dirs = []
+    extraction_errors = []
 
-    entries = scan_files(source_dir, output_root, temp_dirs)
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
     assert len(entries) == 1
     assert entries[0].source == source_dir / "broken.zip"
     assert entries[0].relative_destination == Path("broken.zip")
     assert temp_dirs == []
+    assert extraction_errors == [source_dir / "broken.zip"]
+
+
+def test_scan_files_corrupt_archive_error_counts_toward_errors_total(tmp_path):
+    """
+    Mirrors how main() folds extraction_errors into its errors summary
+    counter (errors += len(extraction_errors)), without needing to drive
+    the full CLI. A corrupt archive must be counted as an error even
+    though it still produces a ScanEntry (copied unchanged).
+    """
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "broken.zip").write_bytes(b"not a real zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+    extraction_errors = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
+
+    errors = 0
+    errors += len(extraction_errors)
+
+    assert len(entries) == 1  # still falls back to a copy of the archive
+    assert errors == 1
+
+
+def test_scan_files_nested_corrupt_archive_is_counted_as_extraction_error(
+    tmp_path,
+):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+
+    with zipfile.ZipFile(source_dir / "outer.zip", "w") as outer:
+        # A member named *.zip whose bytes are not actually a valid zip:
+        # is_archive_file() will try to recurse into it and fail.
+        outer.writestr("broken.zip", "not a real zip")
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+    extraction_errors = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
+
+    assert len(entries) == 1
+    assert entries[0].relative_destination == Path("outer/broken.zip")
+    assert len(extraction_errors) == 1
