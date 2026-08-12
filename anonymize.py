@@ -167,20 +167,30 @@ PHONE_PATTERN = re.compile(
 
 # IBANs are printed either contiguously ("PL6110901014...", sometimes
 # lowercase) or - far more commonly - grouped in fours
-# ("PL61 1090 1014 0000 0712 1981 2874"). Both forms must be matched as
+# ("PL61 1090 1014 0000 0712 1981 2874"). Both forms must be redacted as
 # one span; otherwise CARD_PATTERN grabs the 16 digits in the middle and
 # the country code and the tail of the account number leak in cleartext.
-# The optional short final group (for IBAN lengths that are not a
-# multiple of four, e.g. German 22-character ones) is only taken when it
-# is not a plain word, so an IBAN followed by ordinary prose
-# ("... 2874 w PKO") is not swallowed into an unvalidatable match.
-IBAN_PATTERN = re.compile(
+#
+# No fixed-shape regex can find the end of a grouped IBAN: its own
+# groups and a short word or number following it are both just "four
+# alphanumerics". Polish (28 characters) and Spanish (24) IBANs - this
+# tool's main target - have a length that is an exact multiple of four,
+# so any trailing token looks exactly like one more group of the number.
+#
+# Hence this pattern deliberately over-matches: a generous candidate
+# span that always contains the whole IBAN (ISO 13616 caps it at 34
+# characters) plus some trailing text, and the checksum - not the
+# regex - decides where the IBAN really ends. See redact_ibans().
+IBAN_CANDIDATE_PATTERN = re.compile(
     r"\b[A-Za-z]{2}\d{2}"
-    r"(?:"
-    r"[A-Za-z0-9]{10,30}"
-    r"|(?:[ ][A-Za-z0-9]{4}){2,8}(?:[ ](?![A-Za-z]+\b)[A-Za-z0-9]{1,3})?"
-    r")\b"
+    r"(?:[A-Za-z0-9]{10,30}|(?:[ ][A-Za-z0-9]{1,4}){2,10})"
+    r"\b"
 )
+
+# Shortest string validate_iban() can accept (its own shape check is
+# 2 + 2 + at least 10 characters; the shortest registered IBAN, Norway's,
+# is 15). Prefixes below this cannot validate, so the trim loop stops.
+IBAN_MIN_LENGTH = 14
 
 CARD_PATTERN = re.compile(
     r"(?<!\d)(?:\d{4}[ -]?){3}\d{4}(?!\d)|(?<!\d)\d{13,19}(?!\d)"
@@ -198,10 +208,15 @@ IPV4_PATTERN = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
 )
 
-PII_PATTERNS = (
+# These categories all share the same shape - match, validate the whole
+# match, replace it wholesale - and are applied in order, around the
+# IBAN step that runs between them (see redact_pii).
+PII_PATTERNS_BEFORE_IBAN = (
     ("EMAIL", EMAIL_PATTERN, None),
     ("IP", IPV4_PATTERN, None),
-    ("IBAN", IBAN_PATTERN, validate_iban),
+)
+
+PII_PATTERNS_AFTER_IBAN = (
     (
         "CARD",
         CARD_PATTERN,
@@ -213,10 +228,65 @@ PII_PATTERNS = (
 )
 
 
-def redact_pii(text: str) -> tuple[str, int]:
+def redact_ibans(text: str) -> tuple[str, int]:
+    """
+    Replace every checksum-valid IBAN in `text` with "[IBAN]".
+
+    IBAN_CANDIDATE_PATTERN over-matches on purpose, so each candidate is
+    trimmed from the right one space-separated group at a time and the
+    longest prefix that passes validate_iban() wins. That prefix - and
+    only it - is replaced; whatever followed it stays exactly as it was,
+    because it is ordinary text, not part of the account number. A
+    candidate with no valid prefix was never an IBAN and is left alone.
+
+    Scanning therefore cannot use re.sub(), which would resume after the
+    whole over-matched span and skip past text that was never redacted:
+    a second IBAN later on the same line, or one standing behind a
+    candidate that failed, would be swallowed by the over-match and leak
+    in cleartext. Instead the scan resumes right after whatever was
+    actually consumed.
+    """
+    count = 0
+    chunks = []
+    pos = 0
+
+    while (match := IBAN_CANDIDATE_PATTERN.search(text, pos)) is not None:
+        tokens = match.group(0).split(" ")
+        prefix = None
+
+        for stop in range(len(tokens), 0, -1):
+            head = " ".join(tokens[:stop])
+
+            if len(head.replace(" ", "")) < IBAN_MIN_LENGTH:
+                # Every remaining prefix is shorter still.
+                break
+
+            if validate_iban(head):
+                prefix = head
+                break
+
+        chunks.append(text[pos:match.start()])
+
+        if prefix is None:
+            # Not an IBAN. Keep it verbatim and resume after its first
+            # token: a real IBAN can only start on a token boundary, so
+            # nothing is skipped and each step still moves forward.
+            pos = match.start() + len(tokens[0])
+            chunks.append(text[match.start():pos])
+        else:
+            chunks.append("[IBAN]")
+            count += 1
+            pos = match.start() + len(prefix)
+
+    chunks.append(text[pos:])
+
+    return "".join(chunks), count
+
+
+def _redact_categories(text: str, categories) -> tuple[str, int]:
     total = 0
 
-    for label, pattern, validator in PII_PATTERNS:
+    for label, pattern, validator in categories:
         def replace(match, label=label, validator=validator):
             nonlocal total
 
@@ -229,6 +299,20 @@ def redact_pii(text: str) -> tuple[str, int]:
         text = pattern.sub(replace, text)
 
     return text, total
+
+
+def redact_pii(text: str) -> tuple[str, int]:
+    text, before = _redact_categories(text, PII_PATTERNS_BEFORE_IBAN)
+
+    # IBANs need their own validation-aware pass (see redact_ibans), and
+    # it has to run here - before CARD/PESEL/NIP, which would otherwise
+    # grab a still-unredacted IBAN's digit groups, mislabel them and
+    # leak the rest of the account number around them.
+    text, ibans = redact_ibans(text)
+
+    text, after = _redact_categories(text, PII_PATTERNS_AFTER_IBAN)
+
+    return text, before + ibans + after
 
 
 # ------------------------------------------------------------
@@ -521,14 +605,20 @@ def archive_stem(path: Path) -> str:
         if name.lower().endswith(suffix):
             stem = name[: -len(suffix)]
 
-            # A member literally named ".zip" (or "..zip") strips down to
-            # an empty or dot-only stem, which is not a usable path
-            # component - Path.with_name() rejects it and the whole run
-            # would abort. Fall back to something non-empty instead.
+            # A member literally named ".zip" (or "..zip", "...zip")
+            # strips down to an empty or dot-only stem, which is not a
+            # usable path component: Path.with_name("") and
+            # with_name(".") raise ValueError and abort the whole run,
+            # and with_name("..") silently builds a path that climbs out
+            # of the output directory. Fall back to the on-disk name,
+            # which is a valid component by construction. (Not
+            # path.stem: before Python 3.14 that returns "." for
+            # "..zip" and ".." for "...zip" - the very values being
+            # guarded against here.)
             if stem and stem not in (".", ".."):
                 return stem
 
-            return path.stem or name
+            return name
 
     return path.stem
 

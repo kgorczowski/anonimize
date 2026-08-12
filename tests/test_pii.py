@@ -97,6 +97,79 @@ def test_redact_pii_masks_grouped_iban_with_short_final_group():
     assert count == 1
 
 
+def test_redact_pii_iban_followed_by_word_pl():
+    text, count = redact_pii(
+        "Nr konta: PL61 1090 1014 0000 0712 1981 2874 Bank Pekao SA"
+    )
+    assert text == "Nr konta: [IBAN] Bank Pekao SA"
+    assert count == 1
+
+
+def test_redact_pii_iban_followed_by_word_es():
+    text, count = redact_pii(
+        "Konto ES91 2100 0418 4502 0005 1332 bank koniec"
+    )
+    assert "ES91" not in text
+    assert "2100 0418 4502 0005 1332" not in text
+    assert "[IBAN]" in text
+    assert count == 1
+
+
+def test_redact_pii_iban_followed_by_four_digit_number():
+    """
+    A trailing number is the same trap as a trailing word: it looks
+    exactly like one more group of the account number.
+    """
+    text, count = redact_pii(
+        "Konto PL61 1090 1014 0000 0712 1981 2874 1234 PLN"
+    )
+    assert text == "Konto [IBAN] 1234 PLN"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
+def test_redact_pii_masks_two_ibans_on_one_line():
+    """
+    The candidate span around the first IBAN reaches into the second
+    one. Resuming the scan after the whole over-matched span (what
+    re.sub does) would skip the second IBAN and leak it in cleartext.
+    """
+    text, count = redact_pii(
+        "Dwa: PL61 1090 1014 0000 0712 1981 2874 oraz "
+        "ES91 2100 0418 4502 0005 1332 koniec"
+    )
+    assert text == "Dwa: [IBAN] oraz [IBAN] koniec"
+    assert count == 2
+
+
+def test_redact_pii_masks_iban_standing_behind_a_failed_candidate():
+    """
+    Short words chain into a candidate span that swallows the real IBAN
+    behind them. Discarding the failed candidate whole would leave the
+    IBAN unredacted - and CARD_PATTERN then mislabels its middle 16
+    digits, which is the original leak this pattern exists to prevent.
+    """
+    text, count = redact_pii(
+        "AB12 not a real iban PL61 1090 1014 0000 0712 1981 2874"
+    )
+    assert text == "AB12 not a real iban [IBAN]"
+    assert "[CARD]" not in text
+    assert count == 1
+
+
+def test_redact_pii_does_not_redact_iban_shaped_text_that_is_not_an_iban():
+    """
+    Nothing here passes the checksum, so nothing may be redacted - the
+    over-matching candidate pattern must not become an over-redacting
+    one.
+    """
+    original = "AB12 not a real iban at all bank account number here"
+    text, count = redact_pii(original)
+    assert text == original
+    assert "[IBAN]" not in text
+    assert count == 0
+
+
 def test_redact_pii_masks_card_number_with_spaces():
     text, count = redact_pii("Card 4111 1111 1111 1111 exp 12/30")
     assert text == "Card [CARD] exp 12/30"

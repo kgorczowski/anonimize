@@ -49,18 +49,115 @@ def test_archive_stem(tmp_path, filename, expected_stem):
     assert archive_stem(tmp_path / filename) == expected_stem
 
 
-@pytest.mark.parametrize("filename", [".zip", ".rar", ".7z", ".tar", ".tar.gz"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        ".zip",
+        ".rar",
+        ".7z",
+        ".tar",
+        ".tar.gz",
+        "..zip",
+        "...zip",
+        "..tar.gz",
+        "...tar.gz",
+    ],
+)
 def test_archive_stem_of_suffix_only_name_is_usable(tmp_path, filename):
     """
     A file (or archive member) named exactly ".zip" strips down to an
     empty stem. Path.with_name("") raises ValueError, which used to
-    escape scan_files and abort the whole run.
+    escape scan_files and abort the whole run. "..zip" and "...zip"
+    strip down to "." and "..": with_name(".") raises the same way, and
+    with_name("..") quietly builds a path that climbs out of the output
+    directory.
     """
     stem = archive_stem(tmp_path / filename)
 
     assert stem
+    assert stem not in (".", "..")
     # Must be usable as a path component - this is what scan_files does.
     assert Path("a/b.zip").with_name(stem).name == stem
+
+
+@pytest.mark.parametrize(
+    "filename,expected_stem",
+    [
+        (".zip", ".zip"),
+        ("..zip", "..zip"),
+        ("...zip", "...zip"),
+        (".tar.gz", ".tar.gz"),
+        ("..tar.gz", "..tar.gz"),
+        ("...tar.gz", "...tar.gz"),
+    ],
+)
+def test_archive_stem_of_dot_only_name_falls_back_to_the_name(
+    tmp_path, filename, expected_stem
+):
+    """
+    Exact output, not just "does not crash": the fallback must be the
+    on-disk name, which is a valid path component by construction.
+
+    It used to fall back to Path.stem, whose result for these names is
+    version-dependent - before Python 3.14, Path("..zip").stem is "."
+    and Path("...zip").stem is ".." - so the crash and the directory
+    escape survived on every pre-3.14 interpreter.
+    """
+    assert archive_stem(tmp_path / filename) == expected_stem
+
+
+@pytest.mark.parametrize(
+    "filename,legacy_stem",
+    [
+        ("..zip", "."),
+        ("...zip", ".."),
+        ("..tar.gz", ".tar"),
+        ("...tar.gz", "..tar"),
+    ],
+)
+def test_archive_stem_ignores_path_stem(tmp_path, filename, legacy_stem):
+    """
+    Version-independence, pinned: archive_stem must not consult .stem
+    for these names at all. Feeding it the values CPython 3.9-3.13
+    actually returns must not change the result.
+    """
+    class LegacyPath:
+        # archive_stem only ever reads .name and .stem.
+        name = filename
+        stem = legacy_stem
+
+    assert archive_stem(LegacyPath()) == filename
+    assert archive_stem(LegacyPath()) == archive_stem(tmp_path / filename)
+
+
+@pytest.mark.parametrize("arcname", [".zip", "..zip", "...zip"])
+def test_scan_files_handles_dot_only_archive_member_names(tmp_path, arcname):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+
+    inner_zip = tmp_path / "payload.zip"
+    with zipfile.ZipFile(inner_zip, "w") as inner:
+        inner.writestr("note.txt", "inner note")
+
+    with zipfile.ZipFile(source_dir / "outer.zip", "w") as outer:
+        outer.write(inner_zip, arcname=arcname)
+
+    output_root = tmp_path / "out"
+    temp_dirs = []
+    extraction_errors = []
+
+    entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
+
+    assert len(entries) == 1
+
+    destination = entries[0].relative_destination
+
+    assert destination.parts[0] == "outer"
+    assert destination.name == "note.txt"
+    # No component may let the output escape the output directory.
+    assert ".." not in destination.parts
+    assert "." not in destination.parts
+    assert extraction_errors == []
 
 
 def test_scan_files_handles_member_named_exactly_dot_zip(tmp_path):
