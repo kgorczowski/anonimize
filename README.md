@@ -35,8 +35,8 @@ A flat JSON object mapping each sensitive string to the value it should be repla
 
 ```json
 {
-  "VM": "Company1",
-  "BDR": "Company2"
+  "LLM Company": "Company1",
+  "BRG Company": "Company2"
 }
 ```
 
