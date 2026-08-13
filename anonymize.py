@@ -534,6 +534,32 @@ def extract_pdf_tables(page, timeout=PDF_TABLE_TIMEOUT_SECONDS) -> list:
     return tables
 
 
+TESSERACT_COMMON_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def locate_tesseract():
+    """
+    Returns a path to the Tesseract executable if it's installed but not
+    on PATH, so pytesseract can be pointed at it directly. A fresh
+    winget/installer PATH entry doesn't reach an already-open terminal,
+    so relying on PATH alone means "install Tesseract" doesn't actually
+    fix OCR until the user finds and restarts their shell. Returns None
+    if Tesseract is already on PATH (nothing to do), or isn't found in
+    any known common location either.
+    """
+    if shutil.which("tesseract"):
+        return None
+
+    for candidate in TESSERACT_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+
+    return None
+
+
 def ocr_page(page) -> str:
     try:
         import pytesseract
@@ -543,6 +569,10 @@ def ocr_page(page) -> str:
             "Missing OCR dependencies. Install them with: "
             "pip install pytesseract Pillow"
         )
+
+    tesseract_path = locate_tesseract()
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
     pixmap = page.get_pixmap(dpi=300)
     image = Image.frombytes(
