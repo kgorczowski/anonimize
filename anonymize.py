@@ -12,8 +12,15 @@
 # particular, four-part version strings ("1.0.0.0" in .cs/.json/.xml or
 # build config files) are indistinguishable from IPv4 addresses and are
 # redacted as [IP].
+#
+# A file, archive, or PDF page that fails to process (including PDF
+# table detection taking longer than PDF_TABLE_TIMEOUT_SECONDS) is
+# reported as an error and EXCLUDED from the output, never copied in
+# unprocessed - the output directory must never contain a raw file that
+# was supposed to be anonymized but wasn't.
 
 import argparse
+import concurrent.futures
 import json
 import re
 import shutil
@@ -464,9 +471,37 @@ def convert_pptx_to_markdown(source: Path) -> str:
     return "\n".join(result)
 
 
-def extract_pdf_tables(page) -> list:
+PDF_TABLE_TIMEOUT_SECONDS = 30
+
+
+class PdfTableTimeoutError(Exception):
+    pass
+
+
+def extract_pdf_tables(page, timeout=PDF_TABLE_TIMEOUT_SECONDS) -> list:
     if not hasattr(page, "find_tables"):
         return []
+
+    # find_tables() is a heuristic layout-analysis algorithm with no
+    # guaranteed runtime bound - on certain real-world pages (dense
+    # text, unusual layouts) it can run long enough to hang an
+    # unattended batch of thousands of files. Run it on a worker thread
+    # so we can give up after `timeout` instead of blocking forever.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    try:
+        future = executor.submit(lambda: page.find_tables().tables)
+        found_tables = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise PdfTableTimeoutError(
+            f"table detection timed out after {timeout}s"
+        )
+    finally:
+        # Don't wait for an abandoned call to finish - it may never
+        # return. The thread is left to finish on its own in the
+        # background; the caller must not touch this page's document
+        # again afterward (see convert_pdf_to_markdown).
+        executor.shutdown(wait=False)
 
     def cell_to_string(value):
         if value is None:
@@ -475,7 +510,7 @@ def extract_pdf_tables(page) -> list:
 
     tables = []
 
-    for table in page.find_tables().tables:
+    for table in found_tables:
         rows = table.extract()
 
         if not rows:
@@ -534,6 +569,7 @@ def convert_pdf_to_markdown(source: Path) -> str:
 
     document = fitz.open(source)
     result = []
+    timed_out = False
 
     try:
         for page_number, page in enumerate(document, start=1):
@@ -549,11 +585,21 @@ def convert_pdf_to_markdown(source: Path) -> str:
                 result.append(text)
                 result.append("")
 
-            for table_lines in extract_pdf_tables(page):
-                result.extend(table_lines)
-                result.append("")
+            try:
+                for table_lines in extract_pdf_tables(page):
+                    result.extend(table_lines)
+                    result.append("")
+            except PdfTableTimeoutError:
+                # The worker thread that ran find_tables() is abandoned,
+                # not killed, and may still be reading this document in
+                # the background - closing it here could race with that
+                # thread. Give up on the whole PDF and leave the
+                # document to be released once that thread finishes.
+                timed_out = True
+                raise
     finally:
-        document.close()
+        if not timed_out:
+            document.close()
 
     return "\n".join(result)
 
@@ -809,9 +855,11 @@ def scan_files(
     archive's location, e.g. bundle.zip -> bundle/<path inside zip>.
 
     An archive that fails to extract, or that would exceed
-    MAX_ARCHIVE_DEPTH, is returned as-is (to be copied unchanged by the
-    normal file-processing path) instead of raising. Extraction failures
-    (but not depth-limit fallbacks, which are not errors) are appended to
+    MAX_ARCHIVE_DEPTH, is excluded from the result entirely instead of
+    raising or being copied in unchanged: its contents could not be
+    inspected, so copying it verbatim would put un-anonymized content
+    (dictionary terms, PII) into the output. Extraction failures (but
+    not depth-limit fallbacks, which are not errors) are appended to
     extraction_errors so the caller can fold them into its own error
     count.
     """
@@ -836,13 +884,14 @@ def scan_files(
         if is_archive_file(path):
             if depth >= MAX_ARCHIVE_DEPTH:
                 # Deliberate policy fallback, not a failure: logged, but
-                # never added to extraction_errors.
+                # never added to extraction_errors. The archive is
+                # excluded rather than copied in unchanged, since its
+                # contents were never inspected/anonymized.
                 print(
                     f"WARNING: archive nesting exceeds depth limit "
-                    f"({MAX_ARCHIVE_DEPTH}), copying unchanged: {path}",
+                    f"({MAX_ARCHIVE_DEPTH}), excluding from output: {path}",
                     file=sys.stderr,
                 )
-                entries.append(ScanEntry(path, relative_path))
                 continue
 
             extract_dir = Path(tempfile.mkdtemp(prefix="anonymize_"))
@@ -856,7 +905,6 @@ def scan_files(
                     file=sys.stderr,
                 )
                 extraction_errors.append(path)
-                entries.append(ScanEntry(path, relative_path))
                 continue
 
             temp_dirs.append(extract_dir)
@@ -1175,15 +1223,12 @@ def main():
                     file=sys.stderr,
                 )
 
-                # A file that cannot be processed is copied unchanged
-                # rather than dropped from the output entirely. The
-                # error is already counted and logged, so a failing
-                # fallback must not abort the run either.
-                try:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(entry.source, destination)
-                except Exception:
-                    pass
+                # Deliberately not copied unchanged: this tool exists to
+                # anonymize PII, and a file that failed to process is
+                # exactly the file we could not guarantee is safe. The
+                # error is already counted and logged; the file is
+                # simply excluded from the output rather than risking a
+                # raw, un-anonymized copy landing in it.
 
             processed += 1
 

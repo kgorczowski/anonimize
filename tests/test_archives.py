@@ -389,7 +389,7 @@ def test_scan_files_extracts_nested_zip(tmp_path):
     assert extraction_errors == []
 
 
-def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
+def test_scan_files_excludes_archive_at_max_depth(tmp_path, capsys):
     source_dir = tmp_path / "src"
     source_dir.mkdir()
 
@@ -408,16 +408,17 @@ def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
         depth=MAX_ARCHIVE_DEPTH,
     )
 
-    assert len(entries) == 1
-    assert entries[0].source == source_dir / "bundle.zip"
-    assert entries[0].relative_destination == Path("bundle.zip")
+    # The archive's contents could not be anonymized (we gave up
+    # recursing into it), so it must not appear in the output at all --
+    # copying it unchanged would put un-anonymized content, dictionary
+    # terms and PII included, into what's meant to be a safe output dir.
+    assert entries == []
     assert temp_dirs == []
     # Hitting the depth limit is a deliberate policy fallback, not a
     # failure - it must not be counted as an extraction error.
     assert extraction_errors == []
 
-    # ...but it must not be silent either: the archive is copied out
-    # verbatim, with dictionary terms and PII still inside it.
+    # ...but it must not be silent either.
     stderr = capsys.readouterr().err
     assert "WARNING:" in stderr
     assert "depth limit" in stderr
@@ -426,7 +427,7 @@ def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
     assert "ERROR:" not in stderr
 
 
-def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
+def test_scan_files_excludes_corrupt_archive(tmp_path):
     source_dir = tmp_path / "src"
     source_dir.mkdir()
     (source_dir / "broken.zip").write_bytes(b"not a real zip")
@@ -437,9 +438,10 @@ def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
 
     entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
-    assert len(entries) == 1
-    assert entries[0].source == source_dir / "broken.zip"
-    assert entries[0].relative_destination == Path("broken.zip")
+    # A corrupt/undecryptable archive's contents cannot be inspected or
+    # anonymized, so the whole archive is excluded from the output
+    # rather than copied in unchanged.
+    assert entries == []
     assert temp_dirs == []
     assert extraction_errors == [source_dir / "broken.zip"]
 
@@ -449,7 +451,7 @@ def test_scan_files_corrupt_archive_error_counts_toward_errors_total(tmp_path):
     Mirrors how main() folds extraction_errors into its errors summary
     counter (errors += len(extraction_errors)), without needing to drive
     the full CLI. A corrupt archive must be counted as an error even
-    though it still produces a ScanEntry (copied unchanged).
+    though it produces no ScanEntry (excluded, not copied).
     """
     source_dir = tmp_path / "src"
     source_dir.mkdir()
@@ -464,7 +466,7 @@ def test_scan_files_corrupt_archive_error_counts_toward_errors_total(tmp_path):
     errors = 0
     errors += len(extraction_errors)
 
-    assert len(entries) == 1  # still falls back to a copy of the archive
+    assert entries == []  # excluded, not copied
     assert errors == 1
 
 
@@ -563,6 +565,7 @@ def test_scan_files_nested_corrupt_archive_is_counted_as_extraction_error(
 
     entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
-    assert len(entries) == 1
-    assert entries[0].relative_destination == Path("outer/broken.zip")
+    # The corrupt nested archive is excluded, not copied in unchanged;
+    # nothing else was in outer.zip, so nothing survives from it either.
+    assert entries == []
     assert len(extraction_errors) == 1

@@ -131,13 +131,16 @@ def _run_cli(monkeypatch, source_dir, replacements_file, output_root):
     anonymize.main()
 
 
-def test_failed_file_is_copied_unchanged_instead_of_disappearing(
+def test_failed_file_is_excluded_rather_than_copied_unanonymized(
     tmp_path, monkeypatch, capsys
 ):
     """
-    A file that cannot be converted must still reach the output. The
-    realistic trigger is a scanned PDF page on a machine without
-    Tesseract: ocr_page raises and the PDF used to vanish silently.
+    A file that cannot be converted must NOT reach the output unprocessed
+    -- this tool exists to anonymize PII, and a raw, un-anonymized source
+    file (e.g. a PDF that may contain real PII) landing in the "anonymized"
+    output directory is worse than the file being absent. The realistic
+    trigger is a scanned PDF page on a machine without Tesseract: ocr_page
+    raises.
     """
     source_dir = tmp_path / "src"
     source_dir.mkdir()
@@ -159,7 +162,7 @@ def test_failed_file_is_copied_unchanged_instead_of_disappearing(
 
     captured = capsys.readouterr()
 
-    assert (output_root / "scan.pdf").read_bytes() == original_bytes
+    assert not (output_root / "scan.pdf").exists()
     assert not (output_root / "scan.md").exists()
     # The rest of the run still completes normally.
     assert (output_root / "plain.txt").read_text(encoding="utf-8") == (

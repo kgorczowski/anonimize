@@ -1,10 +1,12 @@
+import time
 from pathlib import Path
 
 import pytest
 
 fitz = pytest.importorskip("pymupdf")
 
-from anonymize import convert_pdf_to_markdown
+import anonymize
+from anonymize import convert_pdf_to_markdown, extract_pdf_tables, PdfTableTimeoutError
 
 
 def _make_text_pdf(path: Path, lines: list) -> None:
@@ -50,6 +52,48 @@ def test_convert_pdf_to_markdown_labels_multiple_pages(tmp_path):
     assert "Page one text" in markdown
     assert "# Page 2" in markdown
     assert "Page two text" in markdown
+
+
+class _SlowFindTablesPage:
+    """Stands in for a fitz.Page whose find_tables() call never returns
+    in reasonable time, without needing a real pathological PDF."""
+
+    def find_tables(self):
+        time.sleep(5)
+
+        class _Result:
+            tables = []
+
+        return _Result()
+
+
+def test_extract_pdf_tables_raises_on_timeout_instead_of_hanging():
+    start = time.monotonic()
+
+    with pytest.raises(PdfTableTimeoutError):
+        extract_pdf_tables(_SlowFindTablesPage(), timeout=0.2)
+
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2, (
+        f"took {elapsed}s - extract_pdf_tables must give up after the "
+        "timeout, not wait for the slow call to finish"
+    )
+
+
+def test_convert_pdf_to_markdown_raises_when_table_detection_times_out(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "sample.pdf"
+    _make_text_pdf(pdf_path, ["Hello from PDF"])
+
+    def always_times_out(page, timeout=anonymize.PDF_TABLE_TIMEOUT_SECONDS):
+        raise PdfTableTimeoutError("table detection timed out after 0.2s")
+
+    monkeypatch.setattr(anonymize, "extract_pdf_tables", always_times_out)
+
+    with pytest.raises(PdfTableTimeoutError):
+        convert_pdf_to_markdown(pdf_path)
 
 
 def _tesseract_available() -> bool:
