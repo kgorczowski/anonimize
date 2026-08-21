@@ -1,0 +1,5 @@
+# Shell scripts must keep LF line endings. Windows checkouts with
+# core.autocrlf=true otherwise convert them to CRLF, which breaks bash
+# (stray \r treated as part of each line: "invalid option", "command not
+# found", syntax errors on function definitions).
+*.sh text eol=lf
