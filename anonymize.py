@@ -79,12 +79,18 @@ def anonymize_text(text: str, replacements: dict) -> str:
     if not replacements:
         return text
 
+    # Matching is case-insensitive (a term may appear as "BDR" in one
+    # file and "bdr" in a Java package name in another), but the
+    # substituted value is always the dictionary's exact value, never
+    # case-adjusted to match what was found.
     pattern = re.compile(
-        "|".join(re.escape(original) for original in replacements)
+        "|".join(re.escape(original) for original in replacements),
+        re.IGNORECASE,
     )
+    lookup = {original.lower(): value for original, value in replacements.items()}
 
     return pattern.sub(
-        lambda match: replacements[match.group(0)],
+        lambda match: lookup[match.group(0).lower()],
         text,
     )
 
@@ -957,6 +963,54 @@ def scan_files(
     return entries
 
 
+def anonymize_relative_path(relative_path: Path, replacements: dict) -> Path:
+    """
+    Anonymizes every path segment (folder names, and the file name's
+    stem) using the same dictionary substitution as file contents -- the
+    output directory must not leak dictionary terms through its folder
+    or file names even when a file's own content is otherwise
+    anonymized (or isn't touched at all, e.g. a binary file copied
+    unchanged still lives under an anonymized folder).
+
+    The final segment's extension is preserved untouched: it keeps the
+    file recognizable/openable, and it's what process_file's own
+    extension-swapping (e.g. .docx -> .md) operates on afterward.
+    """
+    parts = relative_path.parts
+
+    if not parts:
+        return relative_path
+
+    anonymized_parts = [
+        anonymize_text(part, replacements) for part in parts[:-1]
+    ]
+
+    file_name = parts[-1]
+    stem = Path(file_name).stem
+    suffix = Path(file_name).suffix
+    anonymized_parts.append(anonymize_text(stem, replacements) + suffix)
+
+    return Path(*anonymized_parts)
+
+
+def anonymize_destinations(entries: list, replacements: dict) -> list:
+    """
+    Rewrites every entry's relative_destination via
+    anonymize_relative_path. Must run before deduplicate_destinations:
+    case-insensitive matching means two differently-cased source names
+    (BDR/, bdr/) can anonymize to the same destination, and dedup is
+    what resolves that collision.
+    """
+    return [
+        entry._replace(
+            relative_destination=anonymize_relative_path(
+                entry.relative_destination, replacements
+            )
+        )
+        for entry in entries
+    ]
+
+
 def deduplicate_destinations(entries: list) -> list:
     """
     Make every relative_destination in `entries` unique.
@@ -1180,6 +1234,11 @@ def main():
             temp_dirs,
             extraction_errors,
         )
+
+        # Anonymize folder/file names before deduplicating: two
+        # differently-cased source names (BDR/, bdr/) can now land on
+        # the same destination, and dedup is what resolves that.
+        files = anonymize_destinations(files, replacements)
 
         # An extracted archive can land on the same output path as a
         # plain sibling (data.zip next to data/) or as another archive
