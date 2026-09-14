@@ -210,3 +210,52 @@ def test_full_run_keeps_both_sides_of_an_output_path_collision(
     assert "WARNING:" in captured.err
     assert "collision" in captured.err
     assert "Errors            : 0" in captured.out
+
+
+def test_process_file_blacks_out_image_matching_redaction_signal(tmp_path):
+    from PIL import Image
+
+    source = tmp_path / "assets" / "company_logo.png"
+    source.parent.mkdir()
+    Image.new("RGB", (20, 10), color=(255, 0, 0)).save(source)
+
+    destination = tmp_path / "out" / "company_logo.png"
+
+    status, pii_count = process_file(source, destination, {})
+
+    assert status == "image"
+    assert pii_count == 0
+
+    with Image.open(destination) as result:
+        assert result.size == (20, 10)
+        assert result.convert("RGB").getextrema() == ((0, 0), (0, 0), (0, 0))
+
+
+def test_process_file_copies_non_matching_image_unchanged(tmp_path):
+    from PIL import Image
+
+    source = tmp_path / "photos" / "vacation.png"
+    source.parent.mkdir()
+    Image.new("RGB", (20, 10), color=(255, 0, 0)).save(source)
+    original_bytes = source.read_bytes()
+
+    destination = tmp_path / "out" / "vacation.png"
+
+    status, pii_count = process_file(source, destination, {})
+
+    assert status == "copied"
+    assert pii_count == 0
+    assert destination.read_bytes() == original_bytes
+
+
+def test_process_file_raises_on_corrupt_image_matching_signal(tmp_path):
+    source = tmp_path / "assets" / "broken_logo.png"
+    source.parent.mkdir()
+    source.write_bytes(b"not actually a png")
+
+    destination = tmp_path / "out" / "broken_logo.png"
+
+    with pytest.raises(Exception):
+        process_file(source, destination, {})
+
+    assert not destination.exists()

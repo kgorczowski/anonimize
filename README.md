@@ -1,6 +1,6 @@
 # Anonimize
 
-A command-line tool that recursively walks a directory, anonymizes text and code files by replacing sensitive strings with placeholders, converts Office documents and PDFs to Markdown before anonymizing them too, extracts archives so their contents get the same treatment, and automatically redacts common PII (emails, phone numbers, PESEL, NIP, IBAN, card numbers, IP addresses) on top of the dictionary-based replacements.
+A command-line tool that recursively walks a directory, anonymizes text and code files (and folder/file names) by replacing sensitive strings with placeholders, converts Office documents and PDFs to Markdown before anonymizing them too, extracts archives so their contents get the same treatment, automatically redacts common PII (emails, phone numbers, PESEL, NIP, IBAN, card numbers, IP addresses) on top of the dictionary-based replacements, and blacks out images that look like they might be a logo or brand asset.
 
 ## Requirements
 
@@ -61,7 +61,8 @@ Longer keys are matched before shorter ones, so a more specific string is never 
 | Office (`.docx`, `.xlsx`, `.pptx`) | Converted to Markdown, anonymized, written as `.md` |
 | PDF | Converted to Markdown (OCR fallback for scanned pages), anonymized, written as `.md` |
 | Archives (`.zip`, `.tar`/`.tar.gz`/`.tar.bz2`/`.tar.xz`, `.7z`, `.rar`) | Extracted (recursively, including nested archives) and every file inside gets the same treatment as above; the archive itself doesn't appear in the output |
-| Everything else | Copied unchanged |
+| Images (`.png`, `.bmp`, `.jpg`/`.jpeg`, `.svg`) whose file name or containing folder matches a dictionary entry, or contains `logo`/`icon`/`brand`/`avatar`/`banner`/`trademark` | Replaced with a same-dimensions, solid-black version in the same format — the pixel content is removed, not just the name |
+| Everything else, including images that don't match the above | Copied unchanged |
 
 Folder and file **names** are anonymized against the dictionary for every one of the above (see "Replacements file format"). File **contents** additionally go through automatic PII detection after the dictionary replacement, redacting emails, phone numbers, PESEL, NIP, IBAN, card numbers, and IPv4 addresses with generic tags (`[EMAIL]`, `[PESEL]`, etc.) — this only applies to file types that are actually read as text/converted above, never to binaries copied unchanged. PII detection is regex-based and heuristic: it can occasionally miss an unusual format, and four-part version strings (`"1.0.0.0"` in `.cs`/`.json`/`.xml`/build files) are indistinguishable from IPv4 addresses and get redacted as `[IP]`.
 

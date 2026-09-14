@@ -52,6 +52,20 @@ TEXT_EXTENSIONS = {
 
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 
+IMAGE_EXTENSIONS = {".png", ".bmp", ".jpg", ".jpeg", ".svg"}
+
+# Checked case-insensitively against a file's own name and its immediate
+# containing folder's name, to decide whether an image might be a
+# logo/icon/brand asset worth blacking out.
+IMAGE_REDACTION_KEYWORDS = (
+    "logo",
+    "icon",
+    "brand",
+    "avatar",
+    "banner",
+    "trademark",
+)
+
 
 # ------------------------------------------------------------
 # Replacement map
@@ -652,6 +666,88 @@ def is_office_file(path: Path) -> bool:
     return path.suffix.lower() in OFFICE_EXTENSIONS
 
 
+def is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+# ------------------------------------------------------------
+# Image redaction
+# ------------------------------------------------------------
+
+def path_matches_redaction_signal(source: Path, replacements: dict) -> bool:
+    """
+    True if the file's own name or its immediate containing folder hints
+    it might be a logo/icon/brand asset: matches a dictionary term, or
+    contains one of IMAGE_REDACTION_KEYWORDS. This is a heuristic on the
+    name alone -- an image's actual pixel content is never inspected --
+    so it deliberately errs toward over-redacting rather than risking a
+    real logo slipping through under a neutral file name. Only the file
+    name and its direct parent are checked, not the whole ancestor
+    chain.
+    """
+    for segment in (source.parent.name, source.stem):
+        if anonymize_text(segment, replacements) != segment:
+            return True
+
+        lowered = segment.lower()
+        if any(keyword in lowered for keyword in IMAGE_REDACTION_KEYWORDS):
+            return True
+
+    return False
+
+
+def _read_svg_dimensions(source: Path):
+    text = source.read_text(encoding="utf-8", errors="ignore")
+
+    tag_match = re.search(r"<svg\b[^>]*>", text)
+    tag = tag_match.group(0) if tag_match else ""
+
+    width_match = re.search(r'width="([\d.]+)', tag)
+    height_match = re.search(r'height="([\d.]+)', tag)
+
+    if width_match and height_match:
+        return width_match.group(1), height_match.group(1)
+
+    viewbox_match = re.search(
+        r'viewBox="[\d.\-]+\s+[\d.\-]+\s+([\d.]+)\s+([\d.]+)"', tag
+    )
+    if viewbox_match:
+        return viewbox_match.group(1), viewbox_match.group(2)
+
+    return "300", "300"
+
+
+def blackout_image(source: Path, destination: Path) -> None:
+    """
+    Replaces an image with a same-dimensions, solid-black version in the
+    same format, so a file that might be a logo/icon isn't included in
+    the output at all -- content, not just the file name, is removed.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if source.suffix.lower() == ".svg":
+        width, height = _read_svg_dimensions(source)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{width}" height="{height}">'
+            '<rect width="100%" height="100%" fill="black"/></svg>'
+        )
+        destination.write_text(svg, encoding="utf-8")
+        return
+
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError(
+            "Missing Pillow. Install it with: pip install Pillow"
+        )
+
+    with Image.open(source) as original:
+        size = original.size
+
+    Image.new("RGB", size, color=(0, 0, 0)).save(destination)
+
+
 # ------------------------------------------------------------
 # Archive handling
 # ------------------------------------------------------------
@@ -1137,6 +1233,15 @@ def process_file(
 
         return "pdf", pii_count
 
+    # Image that might be a logo/icon/brand asset -> blacked out.
+    # An image whose name doesn't match the signal falls through to the
+    # unknown/binary copy-unchanged branch below, unaffected.
+    if is_image_file(source) and path_matches_redaction_signal(
+        source, replacements
+    ):
+        blackout_image(source, destination)
+        return "image", 0
+
     # Unknown/binary file:
     # Copy it unchanged.
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1276,6 +1381,7 @@ def main():
         anonymized = 0
         office_converted = 0
         pdf_converted = 0
+        images_redacted = 0
         copied = 0
         errors = 0
         pii_redacted = 0
@@ -1300,6 +1406,8 @@ def main():
                     office_converted += 1
                 elif result == "pdf":
                     pdf_converted += 1
+                elif result == "image":
+                    images_redacted += 1
                 else:
                     copied += 1
 
@@ -1347,6 +1455,7 @@ def main():
         print(f"Text/code         : {anonymized:,}")
         print(f"Office -> Markdown: {office_converted:,}")
         print(f"PDF -> Markdown   : {pdf_converted:,}")
+        print(f"Images redacted   : {images_redacted:,}")
         print(f"Copied unchanged  : {copied:,}")
         print(f"PII fragments     : {pii_redacted:,}")
         print(f"Errors            : {errors:,}")
