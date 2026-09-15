@@ -574,57 +574,65 @@ def test_scan_files_nested_corrupt_archive_is_counted_as_extraction_error(
 
 
 def test_anonymize_relative_path_replaces_whole_folder_name():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("BDR/report.txt"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1/report.txt")
+    assert count == 1
 
 
 def test_anonymize_relative_path_replaces_substring_within_folder_name():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("BDR-config/report.txt"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1-config/report.txt")
+    assert count == 1
 
 
 def test_anonymize_relative_path_replaces_file_stem_keeps_extension():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("BDR_report.pdf"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1_report.pdf")
+    assert count == 1
 
 
 def test_anonymize_relative_path_replaces_every_segment():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("BDR/sub/BDR_file.txt"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1/sub/namespace1_file.txt")
+    assert count == 2
 
 
 def test_anonymize_relative_path_is_case_insensitive():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("bdr/file.txt"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1/file.txt")
+    assert count == 1
 
 
 def test_anonymize_relative_path_leaves_non_matching_names_unchanged():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("reports/2024/summary.txt"), {"BDR": "namespace1"}
     )
     assert result == Path("reports/2024/summary.txt")
+    assert count == 0
 
 
 def test_anonymize_relative_path_leaves_path_unchanged_for_empty_replacements():
-    result = anonymize_relative_path(Path("BDR/report.txt"), {})
+    result, count = anonymize_relative_path(Path("BDR/report.txt"), {})
     assert result == Path("BDR/report.txt")
+    assert count == 0
 
 
 def test_anonymize_relative_path_handles_single_segment_path():
-    result = anonymize_relative_path(
+    result, count = anonymize_relative_path(
         Path("BDR_report.pdf"), {"BDR": "namespace1"}
     )
     assert result == Path("namespace1_report.pdf")
+    assert count == 1
 
 
 def test_anonymize_destinations_rewrites_every_entry_keeps_source(tmp_path):
@@ -633,7 +641,7 @@ def test_anonymize_destinations_rewrites_every_entry_keeps_source(tmp_path):
         ScanEntry(tmp_path / "src" / "other.txt", Path("other.txt")),
     ]
 
-    result = anonymize_destinations(entries, {"BDR": "namespace1"})
+    result, count = anonymize_destinations(entries, {"BDR": "namespace1"})
 
     assert [entry.relative_destination for entry in result] == [
         Path("namespace1/a.txt"),
@@ -643,6 +651,7 @@ def test_anonymize_destinations_rewrites_every_entry_keeps_source(tmp_path):
     assert [entry.source for entry in result] == [
         entry.source for entry in entries
     ]
+    assert count == 1
 
 
 def test_anonymize_then_deduplicate_resolves_case_collision(tmp_path, capsys):
@@ -657,7 +666,9 @@ def test_anonymize_then_deduplicate_resolves_case_collision(tmp_path, capsys):
         ScanEntry(tmp_path / "bdr" / "one.txt", Path("bdr/one.txt")),
     ]
 
-    anonymized = anonymize_destinations(entries, {"BDR": "namespace1"})
+    anonymized, count = anonymize_destinations(
+        entries, {"BDR": "namespace1"}
+    )
     result = deduplicate_destinations(anonymized)
 
     destinations = [entry.relative_destination for entry in result]
@@ -666,4 +677,5 @@ def test_anonymize_then_deduplicate_resolves_case_collision(tmp_path, capsys):
     assert len(set(destinations)) == 2
     assert destinations[0] == Path("namespace1/one.txt")
     assert destinations[1] == Path("namespace1/one__2.txt")
+    assert count == 2
     assert "WARNING:" in capsys.readouterr().err

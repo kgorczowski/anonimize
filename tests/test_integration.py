@@ -21,10 +21,13 @@ def test_process_file_applies_dictionary_and_pii_redaction(tmp_path):
 
     destination = tmp_path / "out" / "notes.txt"
 
-    status, pii_count = process_file(source, destination, replacements)
+    status, pii_count, dict_count = process_file(
+        source, destination, replacements
+    )
 
     assert status == "anonymized"
     assert pii_count == 1
+    assert dict_count == 1
     assert destination.read_text(encoding="utf-8") == (
         "Company1 contact: [EMAIL]"
     )
@@ -47,12 +50,15 @@ def test_process_file_converts_pdf_to_markdown(tmp_path):
 
     destination = tmp_path / "out" / "report.pdf"
 
-    status, pii_count = process_file(source, destination, replacements)
+    status, pii_count, dict_count = process_file(
+        source, destination, replacements
+    )
 
     md_path = destination.with_suffix(".md")
 
     assert status == "pdf"
     assert pii_count == 1
+    assert dict_count == 1
     assert md_path.exists()
 
     content = md_path.read_text(encoding="utf-8")
@@ -87,22 +93,26 @@ def test_full_run_processes_mixed_source_tree(tmp_path, capsys):
         results = {}
         for entry in entries:
             destination = output_root / entry.relative_destination
-            status, pii_count = process_file(
+            status, pii_count, dict_count = process_file(
                 entry.source, destination, replacements
             )
-            results[entry.relative_destination.as_posix()] = (status, pii_count)
+            results[entry.relative_destination.as_posix()] = (
+                status,
+                pii_count,
+                dict_count,
+            )
     finally:
         for temp_dir in temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     assert extraction_errors == []
     assert len(entries) == 2  # no stray or duplicated entries
-    assert results["plain.txt"] == ("anonymized", 1)
+    assert results["plain.txt"] == ("anonymized", 1, 1)
     assert (output_root / "plain.txt").read_text(encoding="utf-8") == (
         "Company1 owner: [EMAIL]"
     )
 
-    assert results["bundle/nested.txt"] == ("anonymized", 1)
+    assert results["bundle/nested.txt"] == ("anonymized", 1, 1)
     assert (output_root / "bundle" / "nested.txt").read_text(
         encoding="utf-8"
     ) == "Company2 ip [IP]"
@@ -221,10 +231,11 @@ def test_process_file_blacks_out_image_matching_redaction_signal(tmp_path):
 
     destination = tmp_path / "out" / "company_logo.png"
 
-    status, pii_count = process_file(source, destination, {})
+    status, pii_count, dict_count = process_file(source, destination, {})
 
     assert status == "image"
     assert pii_count == 0
+    assert dict_count == 0
 
     with Image.open(destination) as result:
         assert result.size == (20, 10)
@@ -241,10 +252,11 @@ def test_process_file_copies_non_matching_image_unchanged(tmp_path):
 
     destination = tmp_path / "out" / "vacation.png"
 
-    status, pii_count = process_file(source, destination, {})
+    status, pii_count, dict_count = process_file(source, destination, {})
 
     assert status == "copied"
     assert pii_count == 0
+    assert dict_count == 0
     assert destination.read_bytes() == original_bytes
 
 

@@ -89,9 +89,9 @@ def load_replacements(path: Path) -> dict:
     )
 
 
-def anonymize_text(text: str, replacements: dict) -> str:
+def anonymize_text(text: str, replacements: dict) -> tuple:
     if not replacements:
-        return text
+        return text, 0
 
     # Matching is case-insensitive (a term may appear as "BDR" in one
     # file and "bdr" in a Java package name in another), but the
@@ -103,10 +103,14 @@ def anonymize_text(text: str, replacements: dict) -> str:
     )
     lookup = {original.lower(): value for original, value in replacements.items()}
 
-    return pattern.sub(
-        lambda match: lookup[match.group(0).lower()],
-        text,
-    )
+    count = 0
+
+    def replace(match):
+        nonlocal count
+        count += 1
+        return lookup[match.group(0).lower()]
+
+    return pattern.sub(replace, text), count
 
 
 # ------------------------------------------------------------
@@ -686,7 +690,8 @@ def path_matches_redaction_signal(source: Path, replacements: dict) -> bool:
     chain.
     """
     for segment in (source.parent.name, source.stem):
-        if anonymize_text(segment, replacements) != segment:
+        _, dict_count = anonymize_text(segment, replacements)
+        if dict_count > 0:
             return True
 
         lowered = segment.lower()
@@ -1059,14 +1064,16 @@ def scan_files(
     return entries
 
 
-def anonymize_relative_path(relative_path: Path, replacements: dict) -> Path:
+def anonymize_relative_path(relative_path: Path, replacements: dict) -> tuple:
     """
     Anonymizes every path segment (folder names, and the file name's
     stem) using the same dictionary substitution as file contents -- the
     output directory must not leak dictionary terms through its folder
     or file names even when a file's own content is otherwise
     anonymized (or isn't touched at all, e.g. a binary file copied
-    unchanged still lives under an anonymized folder).
+    unchanged still lives under an anonymized folder). Returns the
+    rewritten path and how many dictionary substitutions were made in
+    it, so callers can add it to their own running total.
 
     The final segment's extension is preserved untouched: it keeps the
     file recognizable/openable, and it's what process_file's own
@@ -1075,36 +1082,46 @@ def anonymize_relative_path(relative_path: Path, replacements: dict) -> Path:
     parts = relative_path.parts
 
     if not parts:
-        return relative_path
+        return relative_path, 0
 
-    anonymized_parts = [
-        anonymize_text(part, replacements) for part in parts[:-1]
-    ]
+    total = 0
+    anonymized_parts = []
+
+    for part in parts[:-1]:
+        anonymized_part, count = anonymize_text(part, replacements)
+        anonymized_parts.append(anonymized_part)
+        total += count
 
     file_name = parts[-1]
     stem = Path(file_name).stem
     suffix = Path(file_name).suffix
-    anonymized_parts.append(anonymize_text(stem, replacements) + suffix)
+    anonymized_stem, count = anonymize_text(stem, replacements)
+    anonymized_parts.append(anonymized_stem + suffix)
+    total += count
 
-    return Path(*anonymized_parts)
+    return Path(*anonymized_parts), total
 
 
-def anonymize_destinations(entries: list, replacements: dict) -> list:
+def anonymize_destinations(entries: list, replacements: dict) -> tuple:
     """
     Rewrites every entry's relative_destination via
     anonymize_relative_path. Must run before deduplicate_destinations:
     case-insensitive matching means two differently-cased source names
     (BDR/, bdr/) can anonymize to the same destination, and dedup is
-    what resolves that collision.
+    what resolves that collision. Returns the rewritten entries and the
+    total number of dictionary substitutions made across all of them.
     """
-    return [
-        entry._replace(
-            relative_destination=anonymize_relative_path(
-                entry.relative_destination, replacements
-            )
+    total = 0
+    result = []
+
+    for entry in entries:
+        new_path, count = anonymize_relative_path(
+            entry.relative_destination, replacements
         )
-        for entry in entries
-    ]
+        total += count
+        result.append(entry._replace(relative_destination=new_path))
+
+    return result, total
 
 
 def deduplicate_destinations(entries: list) -> list:
@@ -1164,7 +1181,12 @@ def process_file(
     source: Path,
     destination: Path,
     replacements: dict,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
+    """
+    Returns (status, pii_count, dict_count): the outcome label, how many
+    PII fragments were redacted, and how many dictionary substitutions
+    were made in this file's content.
+    """
     suffix = source.suffix.lower()
 
     # Text/code files
@@ -1175,63 +1197,63 @@ def process_file(
             # Keep binary/non-UTF8 files untouched.
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            return "copied-non-utf8", 0
+            return "copied-non-utf8", 0, 0
 
-        text = anonymize_text(text, replacements)
+        text, dict_count = anonymize_text(text, replacements)
         text, pii_count = redact_pii(text)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text, encoding="utf-8")
 
-        return "anonymized", pii_count
+        return "anonymized", pii_count, dict_count
 
     # DOCX -> MD
     if suffix == ".docx":
         markdown = convert_docx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # XLSX -> MD
     if suffix == ".xlsx":
         markdown = convert_xlsx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # PPTX -> MD
     if suffix == ".pptx":
         markdown = convert_pptx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # PDF -> MD
     if suffix == ".pdf":
         markdown = convert_pdf_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "pdf", pii_count
+        return "pdf", pii_count, dict_count
 
     # Image that might be a logo/icon/brand asset -> blacked out.
     # An image whose name doesn't match the signal falls through to the
@@ -1240,14 +1262,14 @@ def process_file(
         source, replacements
     ):
         blackout_image(source, destination)
-        return "image", 0
+        return "image", 0, 0
 
     # Unknown/binary file:
     # Copy it unchanged.
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 
-    return "copied", 0
+    return "copied", 0, 0
 
 
 # ------------------------------------------------------------
@@ -1343,7 +1365,9 @@ def main():
         # Anonymize folder/file names before deduplicating: two
         # differently-cased source names (BDR/, bdr/) can now land on
         # the same destination, and dedup is what resolves that.
-        files = anonymize_destinations(files, replacements)
+        files, dictionary_replacements = anonymize_destinations(
+            files, replacements
+        )
 
         # An extracted archive can land on the same output path as a
         # plain sibling (data.zip next to data/) or as another archive
@@ -1392,13 +1416,14 @@ def main():
             destination = output_root / entry.relative_destination
 
             try:
-                result, pii_count = process_file(
+                result, pii_count, dict_count = process_file(
                     entry.source,
                     destination,
                     replacements,
                 )
 
                 pii_redacted += pii_count
+                dictionary_replacements += dict_count
 
                 if result == "anonymized":
                     anonymized += 1
@@ -1457,6 +1482,7 @@ def main():
         print(f"PDF -> Markdown   : {pdf_converted:,}")
         print(f"Images redacted   : {images_redacted:,}")
         print(f"Copied unchanged  : {copied:,}")
+        print(f"Dict replacements : {dictionary_replacements:,}")
         print(f"PII fragments     : {pii_redacted:,}")
         print(f"Errors            : {errors:,}")
         print(f"Processing time   : {format_duration(duration)}")
