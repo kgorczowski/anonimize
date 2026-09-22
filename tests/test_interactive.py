@@ -325,6 +325,31 @@ def test_prompt_output_directory_browses_when_declined(
     assert result == custom.resolve()
 
 
+def test_prompt_output_directory_falls_back_to_cwd_when_parent_missing(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    # Deliberately do NOT create tmp_path / "anonimized" -- this is the
+    # real-world case this fallback exists for: default_output's parent
+    # doesn't exist yet at this point in the wizard flow (it's only
+    # created later, inside run_anonymization).
+    cwd_dir = tmp_path / "cwd_target"
+    cwd_dir.mkdir()
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: cwd_dir))
+
+    default_output = tmp_path / "anonimized" / "src"
+
+    monkeypatch.setattr(questionary, "confirm", _scripted_confirm([False]))
+    monkeypatch.setattr(
+        questionary, "select", _scripted_select([("select", None)])
+    )
+
+    result = anonymize.prompt_output_directory(default_output)
+
+    assert result == cwd_dir.resolve()
+
+
 def test_prompt_output_directory_raises_keyboard_interrupt_on_cancel(
     tmp_path, monkeypatch
 ):
