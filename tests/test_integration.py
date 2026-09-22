@@ -141,6 +141,24 @@ def _run_cli(monkeypatch, source_dir, replacements_file, output_root):
     anonymize.main()
 
 
+def test_classic_cli_works_without_questionary(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "questionary", None)
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "notes.txt").write_text("VM note", encoding="utf-8")
+
+    replacements_file = tmp_path / "replacements.json"
+    replacements_file.write_text('{"VM": "Company1"}', encoding="utf-8")
+
+    output_root = tmp_path / "out"
+    _run_cli(monkeypatch, source_dir, replacements_file, output_root)
+
+    assert (output_root / "notes.txt").read_text(encoding="utf-8") == (
+        "Company1 note"
+    )
+
+
 def test_failed_file_is_excluded_rather_than_copied_unanonymized(
     tmp_path, monkeypatch, capsys
 ):

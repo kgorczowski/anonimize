@@ -8,6 +8,8 @@ pymupdf
 pytesseract
 Pillow
 
+# Interactive mode (TUI)
+questionary
+
 # Dev: testing
 pytest
-questionary

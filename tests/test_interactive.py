@@ -18,12 +18,16 @@ class _ScriptedAsk:
         return self._value
 
 
-def _scripted_select(answers):
+def _scripted_select(answers, captured=None):
     """Returns a fake `questionary.select` that ignores its arguments and
-    returns the next scripted answer on each call, in order."""
+    returns the next scripted answer on each call, in order. If `captured`
+    is given (a list), each call's `choices` are appended to it as a list
+    of titles, so a test can assert on what was actually offered."""
     it = iter(answers)
 
     def fake_select(message, choices):
+        if captured is not None:
+            captured.append([c.title for c in choices])
         return _ScriptedAsk(next(it))
 
     return fake_select
@@ -108,6 +112,25 @@ def test_browse_for_directory_raises_keyboard_interrupt_on_cancel(
         anonymize.browse_for_directory(tmp_path)
 
 
+def test_browse_for_directory_never_lists_files_as_choices(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+
+    captured = []
+    monkeypatch.setattr(
+        questionary, "select",
+        _scripted_select([("select", None)], captured=captured),
+    )
+
+    anonymize.browse_for_directory(tmp_path)
+
+    assert "notes.txt" not in captured[0]
+
+
 def test_browse_for_replacements_file_selects_existing_json(
     tmp_path, monkeypatch
 ):
@@ -173,6 +196,26 @@ def test_browse_for_replacements_file_raises_keyboard_interrupt_on_cancel(
 
     with pytest.raises(KeyboardInterrupt):
         anonymize.browse_for_replacements_file(tmp_path)
+
+
+def test_browse_for_replacements_file_only_lists_json_files(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    (tmp_path / "repl.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+
+    captured = []
+    monkeypatch.setattr(
+        questionary, "select",
+        _scripted_select([("choose", tmp_path / "repl.json")], captured=captured),
+    )
+
+    anonymize.browse_for_replacements_file(tmp_path)
+
+    assert "notes.txt" not in captured[0]
+    assert "repl.json" in captured[0]
 
 
 def test_manage_replacements_dictionary_add_entry_persists_to_disk(
@@ -371,6 +414,7 @@ def test_run_interactive_mode_happy_path_runs_anonymization(
     (source_dir / "notes.txt").write_text("VM note", encoding="utf-8")
 
     monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
     monkeypatch.setattr(
         questionary,
@@ -409,6 +453,7 @@ def test_run_interactive_mode_cancelled_at_first_prompt_prints_cancelled(
     questionary = pytest.importorskip("questionary")
 
     monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(questionary, "select", _scripted_select([None]))
 
     anonymize.run_interactive_mode()
@@ -425,3 +470,56 @@ def test_run_interactive_mode_missing_questionary_shows_install_hint(
         anonymize.run_interactive_mode()
 
     assert "pip install questionary" in capsys.readouterr().err
+
+
+def test_run_interactive_mode_without_a_tty_shows_hint(monkeypatch, capsys):
+    questionary = pytest.importorskip("questionary")
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit):
+        anonymize.run_interactive_mode()
+
+    assert "needs a terminal" in capsys.readouterr().err
+
+
+def test_main_with_no_args_enters_interactive_mode(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["anonymize.py"])
+    called = []
+    monkeypatch.setattr(
+        anonymize, "run_interactive_mode", lambda: called.append(True)
+    )
+    anonymize.main()
+    assert called == [True]
+
+
+def test_manage_replacements_dictionary_rejects_malformed_json(
+    tmp_path, capsys
+):
+    pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        anonymize.manage_replacements_dictionary(path)
+
+    assert (
+        "ERROR: cannot load replacement map:" in capsys.readouterr().err
+    )
+
+
+def test_manage_replacements_dictionary_rejects_non_dict_json(
+    tmp_path, capsys
+):
+    pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        anonymize.manage_replacements_dictionary(path)
+
+    assert (
+        "ERROR: cannot load replacement map:" in capsys.readouterr().err
+    )

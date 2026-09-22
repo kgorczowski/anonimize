@@ -1601,7 +1601,13 @@ def manage_replacements_dictionary(replacements_path: Path) -> dict:
     """
     import questionary
 
-    data = json.loads(replacements_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(replacements_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("replacements file must contain a JSON object.")
+    except Exception as exc:
+        print(f"ERROR: cannot load replacement map: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     def save():
         replacements_path.write_text(
@@ -1714,6 +1720,14 @@ def run_interactive_mode() -> None:
         print(
             "Interactive mode requires questionary. Install it with: "
             "pip install questionary",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not sys.stdin.isatty():
+        print(
+            "Interactive mode needs a terminal. Use: "
+            "python anonymize.py <source> <replacements.json>",
             file=sys.stderr,
         )
         sys.exit(1)
