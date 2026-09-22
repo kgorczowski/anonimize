@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -171,3 +172,106 @@ def test_browse_for_replacements_file_raises_keyboard_interrupt_on_cancel(
 
     with pytest.raises(KeyboardInterrupt):
         anonymize.browse_for_replacements_file(tmp_path)
+
+
+def test_manage_replacements_dictionary_add_entry_persists_to_disk(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        questionary, "select", _scripted_select(["Add entry", "Continue"])
+    )
+    monkeypatch.setattr(
+        questionary, "text", _scripted_text(["BDR", "namespace1"])
+    )
+
+    result = anonymize.manage_replacements_dictionary(path)
+
+    assert result == {"BDR": "namespace1"}
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "BDR": "namespace1"
+    }
+
+
+def test_manage_replacements_dictionary_edit_entry_persists_to_disk(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text(json.dumps({"BDR": "old_value"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        questionary,
+        "select",
+        _scripted_select(["Edit entry", "BDR", "Continue"]),
+    )
+    monkeypatch.setattr(questionary, "text", _scripted_text(["new_value"]))
+
+    result = anonymize.manage_replacements_dictionary(path)
+
+    assert result == {"BDR": "new_value"}
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "BDR": "new_value"
+    }
+
+
+def test_manage_replacements_dictionary_delete_entry_persists_to_disk(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text(
+        json.dumps({"BDR": "namespace1", "VM": "Company1"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        questionary,
+        "select",
+        _scripted_select(["Delete entry", "BDR", "Continue"]),
+    )
+
+    result = anonymize.manage_replacements_dictionary(path)
+
+    assert result == {"VM": "Company1"}
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "VM": "Company1"
+    }
+
+
+def test_manage_replacements_dictionary_edit_on_empty_dict_returns_to_menu(
+    tmp_path, monkeypatch, capsys
+):
+    questionary = pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        questionary, "select", _scripted_select(["Edit entry", "Continue"])
+    )
+
+    result = anonymize.manage_replacements_dictionary(path)
+
+    assert result == {}
+    assert "No entries yet." in capsys.readouterr().out
+
+
+def test_manage_replacements_dictionary_raises_keyboard_interrupt_on_cancel(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    path = tmp_path / "repl.json"
+    path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(questionary, "select", _scripted_select([None]))
+
+    with pytest.raises(KeyboardInterrupt):
+        anonymize.manage_replacements_dictionary(path)

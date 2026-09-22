@@ -1592,6 +1592,89 @@ def browse_for_replacements_file(start_path: Path) -> Path:
             return target
 
 
+def manage_replacements_dictionary(replacements_path: Path) -> dict:
+    """
+    Interactive Add/Edit/Delete/Continue loop over the dictionary stored
+    at replacements_path. Every change is written back to the file
+    immediately. Returns the current dictionary when the user selects
+    Continue. Raises KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    data = json.loads(replacements_path.read_text(encoding="utf-8"))
+
+    def save():
+        replacements_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    while True:
+        print()
+        print(f"Dictionary: {replacements_path}")
+        if data:
+            for key, value in data.items():
+                print(f"  {key!r} -> {value!r}")
+        else:
+            print("  (empty)")
+        print()
+
+        action = questionary.select(
+            "What next?",
+            choices=["Add entry", "Edit entry", "Delete entry", "Continue"],
+        ).ask()
+
+        if action is None:
+            raise KeyboardInterrupt
+
+        if action == "Continue":
+            return data
+
+        if action == "Add entry":
+            key = questionary.text("Key (text to find):").ask()
+            if key is None:
+                raise KeyboardInterrupt
+            if not key:
+                continue
+
+            value = questionary.text("Value (replacement):").ask()
+            if value is None:
+                raise KeyboardInterrupt
+
+            data[key] = value
+            save()
+            continue
+
+        if not data:
+            print("No entries yet.")
+            continue
+
+        if action == "Edit entry":
+            key = questionary.select(
+                "Which entry?", choices=list(data)
+            ).ask()
+            if key is None:
+                raise KeyboardInterrupt
+
+            value = questionary.text(
+                f"New value for {key!r}:", default=data[key]
+            ).ask()
+            if value is None:
+                raise KeyboardInterrupt
+
+            data[key] = value
+            save()
+        elif action == "Delete entry":
+            key = questionary.select(
+                "Which entry?", choices=list(data)
+            ).ask()
+            if key is None:
+                raise KeyboardInterrupt
+
+            del data[key]
+            save()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
