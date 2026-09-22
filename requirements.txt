@@ -10,3 +10,4 @@ Pillow
 
 # Dev: testing
 pytest
+questionary

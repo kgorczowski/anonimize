@@ -1448,6 +1448,67 @@ def run_anonymization(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# ------------------------------------------------------------
+# Interactive mode
+# ------------------------------------------------------------
+
+def browse_for_directory(start_path: Path) -> Path:
+    """
+    Lets the user navigate directories with arrow keys and Enter,
+    starting at start_path. Returns the chosen directory. Raises
+    KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    current = start_path.resolve()
+
+    while True:
+        try:
+            subdirs = sorted(
+                (p for p in current.iterdir() if p.is_dir()),
+                key=lambda p: p.name.lower(),
+            )
+        except PermissionError:
+            print(
+                f"WARNING: cannot list {current}: permission denied",
+                file=sys.stderr,
+            )
+            subdirs = []
+
+        choices = [
+            questionary.Choice(
+                title="[Select this folder]", value=("select", None)
+            )
+        ]
+
+        if current.parent != current:
+            choices.append(
+                questionary.Choice(title="..", value=("up", None))
+            )
+
+        choices.extend(
+            questionary.Choice(title=p.name, value=("enter", p))
+            for p in subdirs
+        )
+
+        answer = questionary.select(
+            f"Folder: {current}",
+            choices=choices,
+        ).ask()
+
+        if answer is None:
+            raise KeyboardInterrupt
+
+        action, target = answer
+
+        if action == "select":
+            return current
+        if action == "up":
+            current = current.parent
+        elif action == "enter":
+            current = target
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
