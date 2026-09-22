@@ -104,3 +104,70 @@ def test_browse_for_directory_raises_keyboard_interrupt_on_cancel(
 
     with pytest.raises(KeyboardInterrupt):
         anonymize.browse_for_directory(tmp_path)
+
+
+def test_browse_for_replacements_file_selects_existing_json(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    existing = tmp_path / "repl.json"
+    existing.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        questionary, "select", _scripted_select([("choose", existing)])
+    )
+
+    result = anonymize.browse_for_replacements_file(tmp_path)
+
+    assert result == existing
+
+
+def test_browse_for_replacements_file_creates_new_file(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    monkeypatch.setattr(
+        questionary, "select", _scripted_select([("create", None)])
+    )
+    monkeypatch.setattr(
+        questionary, "text", _scripted_text(["new_dict.json"])
+    )
+
+    result = anonymize.browse_for_replacements_file(tmp_path)
+
+    assert result == tmp_path / "new_dict.json"
+    assert result.read_text(encoding="utf-8") == "{}"
+
+
+def test_browse_for_replacements_file_navigates_into_subfolder(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "repl.json"
+    target.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        questionary,
+        "select",
+        _scripted_select([("enter", sub), ("choose", target)]),
+    )
+
+    result = anonymize.browse_for_replacements_file(tmp_path)
+
+    assert result == target
+
+
+def test_browse_for_replacements_file_raises_keyboard_interrupt_on_cancel(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    monkeypatch.setattr(questionary, "select", _scripted_select([None]))
+
+    with pytest.raises(KeyboardInterrupt):
+        anonymize.browse_for_replacements_file(tmp_path)

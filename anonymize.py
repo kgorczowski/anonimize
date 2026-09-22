@@ -1509,6 +1509,89 @@ def browse_for_directory(start_path: Path) -> Path:
             current = target
 
 
+def browse_for_replacements_file(start_path: Path) -> Path:
+    """
+    Lets the user navigate to an existing .json file, or create a new
+    one, starting at start_path. Returns the chosen/created file's path.
+    Raises KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    current = start_path.resolve()
+
+    while True:
+        try:
+            entries = sorted(
+                current.iterdir(), key=lambda p: p.name.lower()
+            )
+        except PermissionError:
+            print(
+                f"WARNING: cannot list {current}: permission denied",
+                file=sys.stderr,
+            )
+            entries = []
+
+        subdirs = [p for p in entries if p.is_dir()]
+        json_files = [
+            p
+            for p in entries
+            if p.is_file() and p.suffix.lower() == ".json"
+        ]
+
+        choices = [
+            questionary.Choice(
+                title="+ Create new replacements file here",
+                value=("create", None),
+            )
+        ]
+
+        if current.parent != current:
+            choices.append(
+                questionary.Choice(title="..", value=("up", None))
+            )
+
+        choices.extend(
+            questionary.Choice(title=f"{p.name}/", value=("enter", p))
+            for p in subdirs
+        )
+        choices.extend(
+            questionary.Choice(title=p.name, value=("choose", p))
+            for p in json_files
+        )
+
+        answer = questionary.select(
+            f"Replacements file: {current}",
+            choices=choices,
+        ).ask()
+
+        if answer is None:
+            raise KeyboardInterrupt
+
+        action, target = answer
+
+        if action == "create":
+            name = questionary.text(
+                "File name (e.g. replacements.json):"
+            ).ask()
+
+            if name is None:
+                raise KeyboardInterrupt
+            if not name:
+                continue
+
+            new_path = current / name
+            if not new_path.exists():
+                new_path.write_text("{}", encoding="utf-8")
+            return new_path
+
+        if action == "up":
+            current = current.parent
+        elif action == "enter":
+            current = target
+        elif action == "choose":
+            return target
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
