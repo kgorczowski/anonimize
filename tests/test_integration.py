@@ -271,3 +271,20 @@ def test_process_file_raises_on_corrupt_image_matching_signal(tmp_path):
         process_file(source, destination, {})
 
     assert not destination.exists()
+
+
+def test_run_anonymization_can_be_called_directly(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "notes.txt").write_text("VM note", encoding="utf-8")
+
+    replacements_file = tmp_path / "replacements.json"
+    replacements_file.write_text('{"VM": "Company1"}', encoding="utf-8")
+
+    output_root = tmp_path / "out"
+
+    anonymize.run_anonymization(source_dir, replacements_file, output_root)
+
+    assert (output_root / "notes.txt").read_text(encoding="utf-8") == (
+        "Company1 note"
+    )

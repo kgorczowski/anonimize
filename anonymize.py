@@ -1276,63 +1276,16 @@ def process_file(
 # Main
 # ------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Recursively anonymize text/code files and convert "
-            "DOCX/XLSX/PPTX files to Markdown."
-        )
-    )
-
-    parser.add_argument(
-        "source",
-        help="Source directory",
-    )
-
-    parser.add_argument(
-        "replacements",
-        help="JSON file containing replacement mappings",
-    )
-
-    parser.add_argument(
-        "--output",
-        help=(
-            "Optional output directory. "
-            "Default: <source-parent>/anonimized/<source-name>"
-        ),
-    )
-
-    args = parser.parse_args()
-
-    source_dir = Path(args.source).expanduser().resolve()
-    replacements_file = Path(args.replacements).expanduser().resolve()
-
-    if not source_dir.exists():
-        print(f"ERROR: source directory does not exist: {source_dir}")
-        sys.exit(1)
-
-    if not source_dir.is_dir():
-        print(f"ERROR: source path is not a directory: {source_dir}")
-        sys.exit(1)
-
-    if not replacements_file.exists():
-        print(f"ERROR: replacement file does not exist: {replacements_file}")
-        sys.exit(1)
-
+def run_anonymization(
+    source_dir: Path,
+    replacements_file: Path,
+    output_root: Path,
+) -> None:
     try:
         replacements = load_replacements(replacements_file)
     except Exception as exc:
         print(f"ERROR: cannot load replacement map: {exc}")
         sys.exit(1)
-
-    if args.output:
-        output_root = Path(args.output).expanduser().resolve()
-    else:
-        output_root = (
-            source_dir.parent
-            / "anonimized"
-            / source_dir.name
-        )
 
     # --------------------------------------------------------
     # PASS 1 - scan
@@ -1493,6 +1446,61 @@ def main():
     finally:
         for temp_dir in temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Recursively anonymize text/code files and convert "
+            "DOCX/XLSX/PPTX files to Markdown."
+        )
+    )
+
+    parser.add_argument(
+        "source",
+        help="Source directory",
+    )
+
+    parser.add_argument(
+        "replacements",
+        help="JSON file containing replacement mappings",
+    )
+
+    parser.add_argument(
+        "--output",
+        help=(
+            "Optional output directory. "
+            "Default: <source-parent>/anonimized/<source-name>"
+        ),
+    )
+
+    args = parser.parse_args()
+
+    source_dir = Path(args.source).expanduser().resolve()
+    replacements_file = Path(args.replacements).expanduser().resolve()
+
+    if not source_dir.exists():
+        print(f"ERROR: source directory does not exist: {source_dir}")
+        sys.exit(1)
+
+    if not source_dir.is_dir():
+        print(f"ERROR: source path is not a directory: {source_dir}")
+        sys.exit(1)
+
+    if not replacements_file.exists():
+        print(f"ERROR: replacement file does not exist: {replacements_file}")
+        sys.exit(1)
+
+    if args.output:
+        output_root = Path(args.output).expanduser().resolve()
+    else:
+        output_root = (
+            source_dir.parent
+            / "anonimized"
+            / source_dir.name
+        )
+
+    run_anonymization(source_dir, replacements_file, output_root)
 
 
 if __name__ == "__main__":
