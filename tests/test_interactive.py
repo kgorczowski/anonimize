@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -275,3 +276,127 @@ def test_manage_replacements_dictionary_raises_keyboard_interrupt_on_cancel(
 
     with pytest.raises(KeyboardInterrupt):
         anonymize.manage_replacements_dictionary(path)
+
+
+def test_prompt_output_directory_returns_default_when_confirmed(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    default_output = tmp_path / "anonimized" / "src"
+
+    monkeypatch.setattr(
+        questionary, "confirm", _scripted_confirm([True])
+    )
+
+    result = anonymize.prompt_output_directory(default_output)
+
+    assert result == default_output
+
+
+def test_prompt_output_directory_browses_when_declined(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    # default_output's parent must exist for browse_for_directory to
+    # have somewhere real to start listing from -- in real usage
+    # ".../anonimized/" usually doesn't exist yet at this point (it's
+    # only created later, inside run_anonymization), which is exactly
+    # what prompt_output_directory's cwd fallback (see Step 3) is for.
+    # This test pre-creates it so it exercises the "parent exists"
+    # branch specifically, without depending on the real cwd's contents.
+    (tmp_path / "anonimized").mkdir()
+    default_output = tmp_path / "anonimized" / "src"
+    custom = tmp_path / "custom_out"
+    custom.mkdir()
+
+    monkeypatch.setattr(
+        questionary, "confirm", _scripted_confirm([False])
+    )
+    monkeypatch.setattr(
+        questionary,
+        "select",
+        _scripted_select([("enter", custom), ("select", None)]),
+    )
+
+    result = anonymize.prompt_output_directory(default_output)
+
+    assert result == custom.resolve()
+
+
+def test_prompt_output_directory_raises_keyboard_interrupt_on_cancel(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    monkeypatch.setattr(questionary, "confirm", _scripted_confirm([None]))
+
+    with pytest.raises(KeyboardInterrupt):
+        anonymize.prompt_output_directory(tmp_path / "out")
+
+
+def test_run_interactive_mode_happy_path_runs_anonymization(
+    tmp_path, monkeypatch
+):
+    questionary = pytest.importorskip("questionary")
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "notes.txt").write_text("VM note", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+
+    monkeypatch.setattr(
+        questionary,
+        "select",
+        _scripted_select(
+            [
+                ("create", None),  # replacements file: create new
+                "Add entry",  # dictionary: add
+                "Continue",  # dictionary: done
+                ("enter", source_dir),  # source folder: enter src
+                ("select", None),  # source folder: select src
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        questionary, "text", _scripted_text(["repl.json", "VM", "Company1"])
+    )
+    monkeypatch.setattr(
+        questionary, "confirm", _scripted_confirm([True, True])
+    )
+
+    anonymize.run_interactive_mode()
+
+    output_root = tmp_path / "anonimized" / "src"
+    assert (output_root / "notes.txt").read_text(encoding="utf-8") == (
+        "Company1 note"
+    )
+    assert json.loads(
+        (tmp_path / "repl.json").read_text(encoding="utf-8")
+    ) == {"VM": "Company1"}
+
+
+def test_run_interactive_mode_cancelled_at_first_prompt_prints_cancelled(
+    tmp_path, monkeypatch, capsys
+):
+    questionary = pytest.importorskip("questionary")
+
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(questionary, "select", _scripted_select([None]))
+
+    anonymize.run_interactive_mode()
+
+    assert "Cancelled." in capsys.readouterr().out
+
+
+def test_run_interactive_mode_missing_questionary_shows_install_hint(
+    monkeypatch, capsys
+):
+    monkeypatch.setitem(sys.modules, "questionary", None)
+
+    with pytest.raises(SystemExit):
+        anonymize.run_interactive_mode()
+
+    assert "pip install questionary" in capsys.readouterr().err

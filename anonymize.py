@@ -1675,7 +1675,91 @@ def manage_replacements_dictionary(replacements_path: Path) -> dict:
             save()
 
 
+def prompt_output_directory(default_output: Path) -> Path:
+    """
+    Asks whether to use default_output; if declined, lets the user pick
+    a different folder via browse_for_directory, starting from its
+    parent if that exists, or the current directory otherwise (the
+    default output's parent -- typically ".../anonimized/" -- usually
+    doesn't exist yet at this point; it's only created later, inside
+    run_anonymization, and browse_for_directory needs a real directory
+    to start listing from). Raises KeyboardInterrupt if the user cancels
+    (Ctrl-C).
+    """
+    import questionary
+
+    use_default = questionary.confirm(
+        f"Use default output folder? {default_output}",
+        default=True,
+    ).ask()
+
+    if use_default is None:
+        raise KeyboardInterrupt
+
+    if use_default:
+        return default_output
+
+    start = (
+        default_output.parent
+        if default_output.parent.exists()
+        else Path.cwd()
+    )
+    return browse_for_directory(start)
+
+
+def run_interactive_mode() -> None:
+    try:
+        import questionary
+    except ImportError:
+        print(
+            "Interactive mode requires questionary. Install it with: "
+            "pip install questionary",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print("=== Anonimize - interactive mode ===")
+
+    try:
+        replacements_file = browse_for_replacements_file(Path.cwd())
+        manage_replacements_dictionary(replacements_file)
+
+        source_dir = browse_for_directory(Path.cwd())
+
+        default_output = (
+            source_dir.parent / "anonimized" / source_dir.name
+        )
+        output_root = prompt_output_directory(default_output)
+
+        replacements_count = len(
+            json.loads(replacements_file.read_text(encoding="utf-8"))
+        )
+
+        confirmed = questionary.confirm(
+            f"Anonymize {source_dir} -> {output_root} "
+            f"using {replacements_count} dictionary entries?",
+            default=True,
+        ).ask()
+
+        if confirmed is None:
+            raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        print()
+        print("Cancelled.")
+        return
+
+    if not confirmed:
+        print("Cancelled.")
+        return
+
+    run_anonymization(source_dir, replacements_file, output_root)
+
+
 def main():
+    if len(sys.argv) == 1:
+        run_interactive_mode()
+        return
+
     parser = argparse.ArgumentParser(
         description=(
             "Recursively anonymize text/code files and convert "
