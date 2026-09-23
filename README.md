@@ -38,6 +38,17 @@ python anonymize.py <source> <replacements.json> [--output <dir>]
 python anonymize.py ./client-project ./replacements.json --output ./anonymized-output
 ```
 
+### Interactive mode
+
+Running `python anonymize.py` with **no arguments** starts an interactive
+wizard instead: pick or create a replacements file, add/edit/delete its
+entries (each change is saved immediately), pick a source folder with an
+arrow-key directory browser, confirm (or change) the output folder, and
+run. Requires the `questionary` package (already in `requirements.txt`);
+if it isn't installed, the no-argument form prints an install hint and
+exits, while `python anonymize.py <source> <replacements.json>` keeps
+working exactly as before.
+
 ## Replacements file format
 
 A flat JSON object mapping each sensitive string to the value it should be replaced with:
