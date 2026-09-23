@@ -1,10 +1,12 @@
+import time
 from pathlib import Path
 
 import pytest
 
 fitz = pytest.importorskip("pymupdf")
 
-from anonymize import convert_pdf_to_markdown
+import anonymize
+from anonymize import convert_pdf_to_markdown, extract_pdf_tables, PdfTableTimeoutError
 
 
 def _make_text_pdf(path: Path, lines: list) -> None:
@@ -52,6 +54,48 @@ def test_convert_pdf_to_markdown_labels_multiple_pages(tmp_path):
     assert "Page two text" in markdown
 
 
+class _SlowFindTablesPage:
+    """Stands in for a fitz.Page whose find_tables() call never returns
+    in reasonable time, without needing a real pathological PDF."""
+
+    def find_tables(self):
+        time.sleep(5)
+
+        class _Result:
+            tables = []
+
+        return _Result()
+
+
+def test_extract_pdf_tables_raises_on_timeout_instead_of_hanging():
+    start = time.monotonic()
+
+    with pytest.raises(PdfTableTimeoutError):
+        extract_pdf_tables(_SlowFindTablesPage(), timeout=0.2)
+
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2, (
+        f"took {elapsed}s - extract_pdf_tables must give up after the "
+        "timeout, not wait for the slow call to finish"
+    )
+
+
+def test_convert_pdf_to_markdown_raises_when_table_detection_times_out(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "sample.pdf"
+    _make_text_pdf(pdf_path, ["Hello from PDF"])
+
+    def always_times_out(page, timeout=anonymize.PDF_TABLE_TIMEOUT_SECONDS):
+        raise PdfTableTimeoutError("table detection timed out after 0.2s")
+
+    monkeypatch.setattr(anonymize, "extract_pdf_tables", always_times_out)
+
+    with pytest.raises(PdfTableTimeoutError):
+        convert_pdf_to_markdown(pdf_path)
+
+
 def _tesseract_available() -> bool:
     try:
         import pytesseract
@@ -86,3 +130,65 @@ def test_convert_pdf_to_markdown_ocrs_scanned_page(tmp_path):
     markdown = convert_pdf_to_markdown(pdf_path)
 
     assert "SCANNED" in markdown.upper()
+
+
+def test_locate_tesseract_returns_none_when_already_on_path(monkeypatch):
+    monkeypatch.setattr(
+        anonymize.shutil, "which", lambda name: r"C:\already\on\path\tesseract.exe"
+    )
+
+    assert anonymize.locate_tesseract() is None
+
+
+def test_locate_tesseract_finds_a_common_windows_install_path(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(anonymize.shutil, "which", lambda name: None)
+
+    fake_tesseract = tmp_path / "Tesseract-OCR" / "tesseract.exe"
+    fake_tesseract.parent.mkdir()
+    fake_tesseract.write_bytes(b"")
+
+    monkeypatch.setattr(
+        anonymize, "TESSERACT_COMMON_PATHS", (str(fake_tesseract),)
+    )
+
+    assert anonymize.locate_tesseract() == str(fake_tesseract)
+
+
+def test_locate_tesseract_returns_none_when_not_found_anywhere(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(anonymize.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        anonymize, "TESSERACT_COMMON_PATHS", (str(tmp_path / "nope.exe"),)
+    )
+
+    assert anonymize.locate_tesseract() is None
+
+
+def test_ocr_page_configures_tesseract_cmd_when_found_off_path(
+    monkeypatch, tmp_path
+):
+    pytesseract = pytest.importorskip("pytesseract")
+
+    fake_tesseract = tmp_path / "tesseract.exe"
+    fake_tesseract.write_bytes(b"")
+
+    monkeypatch.setattr(
+        anonymize, "locate_tesseract", lambda: str(fake_tesseract)
+    )
+    monkeypatch.setattr(
+        pytesseract, "image_to_string", lambda image: "OCR TEXT"
+    )
+
+    document = fitz.open()
+    page = document.new_page()
+
+    try:
+        result = anonymize.ocr_page(page)
+    finally:
+        document.close()
+
+    assert result == "OCR TEXT"
+    assert pytesseract.pytesseract.tesseract_cmd == str(fake_tesseract)

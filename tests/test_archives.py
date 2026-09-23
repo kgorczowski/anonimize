@@ -7,6 +7,8 @@ import pytest
 from anonymize import (
     classify_archive,
     archive_stem,
+    anonymize_destinations,
+    anonymize_relative_path,
     deduplicate_destinations,
     is_archive_file,
     extract_archive,
@@ -389,7 +391,7 @@ def test_scan_files_extracts_nested_zip(tmp_path):
     assert extraction_errors == []
 
 
-def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
+def test_scan_files_excludes_archive_at_max_depth(tmp_path, capsys):
     source_dir = tmp_path / "src"
     source_dir.mkdir()
 
@@ -408,16 +410,17 @@ def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
         depth=MAX_ARCHIVE_DEPTH,
     )
 
-    assert len(entries) == 1
-    assert entries[0].source == source_dir / "bundle.zip"
-    assert entries[0].relative_destination == Path("bundle.zip")
+    # The archive's contents could not be anonymized (we gave up
+    # recursing into it), so it must not appear in the output at all --
+    # copying it unchanged would put un-anonymized content, dictionary
+    # terms and PII included, into what's meant to be a safe output dir.
+    assert entries == []
     assert temp_dirs == []
     # Hitting the depth limit is a deliberate policy fallback, not a
     # failure - it must not be counted as an extraction error.
     assert extraction_errors == []
 
-    # ...but it must not be silent either: the archive is copied out
-    # verbatim, with dictionary terms and PII still inside it.
+    # ...but it must not be silent either.
     stderr = capsys.readouterr().err
     assert "WARNING:" in stderr
     assert "depth limit" in stderr
@@ -426,7 +429,7 @@ def test_scan_files_falls_back_to_copy_at_max_depth(tmp_path, capsys):
     assert "ERROR:" not in stderr
 
 
-def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
+def test_scan_files_excludes_corrupt_archive(tmp_path):
     source_dir = tmp_path / "src"
     source_dir.mkdir()
     (source_dir / "broken.zip").write_bytes(b"not a real zip")
@@ -437,9 +440,10 @@ def test_scan_files_falls_back_to_copy_on_corrupt_archive(tmp_path):
 
     entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
-    assert len(entries) == 1
-    assert entries[0].source == source_dir / "broken.zip"
-    assert entries[0].relative_destination == Path("broken.zip")
+    # A corrupt/undecryptable archive's contents cannot be inspected or
+    # anonymized, so the whole archive is excluded from the output
+    # rather than copied in unchanged.
+    assert entries == []
     assert temp_dirs == []
     assert extraction_errors == [source_dir / "broken.zip"]
 
@@ -449,7 +453,7 @@ def test_scan_files_corrupt_archive_error_counts_toward_errors_total(tmp_path):
     Mirrors how main() folds extraction_errors into its errors summary
     counter (errors += len(extraction_errors)), without needing to drive
     the full CLI. A corrupt archive must be counted as an error even
-    though it still produces a ScanEntry (copied unchanged).
+    though it produces no ScanEntry (excluded, not copied).
     """
     source_dir = tmp_path / "src"
     source_dir.mkdir()
@@ -464,7 +468,7 @@ def test_scan_files_corrupt_archive_error_counts_toward_errors_total(tmp_path):
     errors = 0
     errors += len(extraction_errors)
 
-    assert len(entries) == 1  # still falls back to a copy of the archive
+    assert entries == []  # excluded, not copied
     assert errors == 1
 
 
@@ -563,6 +567,115 @@ def test_scan_files_nested_corrupt_archive_is_counted_as_extraction_error(
 
     entries = scan_files(source_dir, output_root, temp_dirs, extraction_errors)
 
-    assert len(entries) == 1
-    assert entries[0].relative_destination == Path("outer/broken.zip")
+    # The corrupt nested archive is excluded, not copied in unchanged;
+    # nothing else was in outer.zip, so nothing survives from it either.
+    assert entries == []
     assert len(extraction_errors) == 1
+
+
+def test_anonymize_relative_path_replaces_whole_folder_name():
+    result, count = anonymize_relative_path(
+        Path("BDR/report.txt"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1/report.txt")
+    assert count == 1
+
+
+def test_anonymize_relative_path_replaces_substring_within_folder_name():
+    result, count = anonymize_relative_path(
+        Path("BDR-config/report.txt"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1-config/report.txt")
+    assert count == 1
+
+
+def test_anonymize_relative_path_replaces_file_stem_keeps_extension():
+    result, count = anonymize_relative_path(
+        Path("BDR_report.pdf"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1_report.pdf")
+    assert count == 1
+
+
+def test_anonymize_relative_path_replaces_every_segment():
+    result, count = anonymize_relative_path(
+        Path("BDR/sub/BDR_file.txt"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1/sub/namespace1_file.txt")
+    assert count == 2
+
+
+def test_anonymize_relative_path_is_case_insensitive():
+    result, count = anonymize_relative_path(
+        Path("bdr/file.txt"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1/file.txt")
+    assert count == 1
+
+
+def test_anonymize_relative_path_leaves_non_matching_names_unchanged():
+    result, count = anonymize_relative_path(
+        Path("reports/2024/summary.txt"), {"BDR": "namespace1"}
+    )
+    assert result == Path("reports/2024/summary.txt")
+    assert count == 0
+
+
+def test_anonymize_relative_path_leaves_path_unchanged_for_empty_replacements():
+    result, count = anonymize_relative_path(Path("BDR/report.txt"), {})
+    assert result == Path("BDR/report.txt")
+    assert count == 0
+
+
+def test_anonymize_relative_path_handles_single_segment_path():
+    result, count = anonymize_relative_path(
+        Path("BDR_report.pdf"), {"BDR": "namespace1"}
+    )
+    assert result == Path("namespace1_report.pdf")
+    assert count == 1
+
+
+def test_anonymize_destinations_rewrites_every_entry_keeps_source(tmp_path):
+    entries = [
+        ScanEntry(tmp_path / "src" / "BDR" / "a.txt", Path("BDR/a.txt")),
+        ScanEntry(tmp_path / "src" / "other.txt", Path("other.txt")),
+    ]
+
+    result, count = anonymize_destinations(entries, {"BDR": "namespace1"})
+
+    assert [entry.relative_destination for entry in result] == [
+        Path("namespace1/a.txt"),
+        Path("other.txt"),
+    ]
+    # Sources are untouched -- only the output path is anonymized.
+    assert [entry.source for entry in result] == [
+        entry.source for entry in entries
+    ]
+    assert count == 1
+
+
+def test_anonymize_then_deduplicate_resolves_case_collision(tmp_path, capsys):
+    """
+    A "BDR" folder and a "bdr" folder are different sources but, once
+    case-insensitively anonymized, land on the same destination -- the
+    dedup pass (which must run *after* anonymization) is what keeps
+    both.
+    """
+    entries = [
+        ScanEntry(tmp_path / "BDR" / "one.txt", Path("BDR/one.txt")),
+        ScanEntry(tmp_path / "bdr" / "one.txt", Path("bdr/one.txt")),
+    ]
+
+    anonymized, count = anonymize_destinations(
+        entries, {"BDR": "namespace1"}
+    )
+    result = deduplicate_destinations(anonymized)
+
+    destinations = [entry.relative_destination for entry in result]
+
+    assert len(result) == 2
+    assert len(set(destinations)) == 2
+    assert destinations[0] == Path("namespace1/one.txt")
+    assert destinations[1] == Path("namespace1/one__2.txt")
+    assert count == 2
+    assert "WARNING:" in capsys.readouterr().err

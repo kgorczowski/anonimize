@@ -12,8 +12,15 @@
 # particular, four-part version strings ("1.0.0.0" in .cs/.json/.xml or
 # build config files) are indistinguishable from IPv4 addresses and are
 # redacted as [IP].
+#
+# A file, archive, or PDF page that fails to process (including PDF
+# table detection taking longer than PDF_TABLE_TIMEOUT_SECONDS) is
+# reported as an error and EXCLUDED from the output, never copied in
+# unprocessed - the output directory must never contain a raw file that
+# was supposed to be anonymized but wasn't.
 
 import argparse
+import concurrent.futures
 import json
 import re
 import shutil
@@ -45,6 +52,20 @@ TEXT_EXTENSIONS = {
 
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 
+IMAGE_EXTENSIONS = {".png", ".bmp", ".jpg", ".jpeg", ".svg"}
+
+# Checked case-insensitively against a file's own name and its immediate
+# containing folder's name, to decide whether an image might be a
+# logo/icon/brand asset worth blacking out.
+IMAGE_REDACTION_KEYWORDS = (
+    "logo",
+    "icon",
+    "brand",
+    "avatar",
+    "banner",
+    "trademark",
+)
+
 
 # ------------------------------------------------------------
 # Replacement map
@@ -68,18 +89,28 @@ def load_replacements(path: Path) -> dict:
     )
 
 
-def anonymize_text(text: str, replacements: dict) -> str:
+def anonymize_text(text: str, replacements: dict) -> tuple:
     if not replacements:
-        return text
+        return text, 0
 
+    # Matching is case-insensitive (a term may appear as "BDR" in one
+    # file and "bdr" in a Java package name in another), but the
+    # substituted value is always the dictionary's exact value, never
+    # case-adjusted to match what was found.
     pattern = re.compile(
-        "|".join(re.escape(original) for original in replacements)
+        "|".join(re.escape(original) for original in replacements),
+        re.IGNORECASE,
     )
+    lookup = {original.lower(): value for original, value in replacements.items()}
 
-    return pattern.sub(
-        lambda match: replacements[match.group(0)],
-        text,
-    )
+    count = 0
+
+    def replace(match):
+        nonlocal count
+        count += 1
+        return lookup[match.group(0).lower()]
+
+    return pattern.sub(replace, text), count
 
 
 # ------------------------------------------------------------
@@ -464,9 +495,37 @@ def convert_pptx_to_markdown(source: Path) -> str:
     return "\n".join(result)
 
 
-def extract_pdf_tables(page) -> list:
+PDF_TABLE_TIMEOUT_SECONDS = 30
+
+
+class PdfTableTimeoutError(Exception):
+    pass
+
+
+def extract_pdf_tables(page, timeout=PDF_TABLE_TIMEOUT_SECONDS) -> list:
     if not hasattr(page, "find_tables"):
         return []
+
+    # find_tables() is a heuristic layout-analysis algorithm with no
+    # guaranteed runtime bound - on certain real-world pages (dense
+    # text, unusual layouts) it can run long enough to hang an
+    # unattended batch of thousands of files. Run it on a worker thread
+    # so we can give up after `timeout` instead of blocking forever.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    try:
+        future = executor.submit(lambda: page.find_tables().tables)
+        found_tables = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise PdfTableTimeoutError(
+            f"table detection timed out after {timeout}s"
+        )
+    finally:
+        # Don't wait for an abandoned call to finish - it may never
+        # return. The thread is left to finish on its own in the
+        # background; the caller must not touch this page's document
+        # again afterward (see convert_pdf_to_markdown).
+        executor.shutdown(wait=False)
 
     def cell_to_string(value):
         if value is None:
@@ -475,7 +534,7 @@ def extract_pdf_tables(page) -> list:
 
     tables = []
 
-    for table in page.find_tables().tables:
+    for table in found_tables:
         rows = table.extract()
 
         if not rows:
@@ -499,6 +558,32 @@ def extract_pdf_tables(page) -> list:
     return tables
 
 
+TESSERACT_COMMON_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def locate_tesseract():
+    """
+    Returns a path to the Tesseract executable if it's installed but not
+    on PATH, so pytesseract can be pointed at it directly. A fresh
+    winget/installer PATH entry doesn't reach an already-open terminal,
+    so relying on PATH alone means "install Tesseract" doesn't actually
+    fix OCR until the user finds and restarts their shell. Returns None
+    if Tesseract is already on PATH (nothing to do), or isn't found in
+    any known common location either.
+    """
+    if shutil.which("tesseract"):
+        return None
+
+    for candidate in TESSERACT_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+
+    return None
+
+
 def ocr_page(page) -> str:
     try:
         import pytesseract
@@ -508,6 +593,10 @@ def ocr_page(page) -> str:
             "Missing OCR dependencies. Install them with: "
             "pip install pytesseract Pillow"
         )
+
+    tesseract_path = locate_tesseract()
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
     pixmap = page.get_pixmap(dpi=300)
     image = Image.frombytes(
@@ -534,6 +623,7 @@ def convert_pdf_to_markdown(source: Path) -> str:
 
     document = fitz.open(source)
     result = []
+    timed_out = False
 
     try:
         for page_number, page in enumerate(document, start=1):
@@ -549,11 +639,21 @@ def convert_pdf_to_markdown(source: Path) -> str:
                 result.append(text)
                 result.append("")
 
-            for table_lines in extract_pdf_tables(page):
-                result.extend(table_lines)
-                result.append("")
+            try:
+                for table_lines in extract_pdf_tables(page):
+                    result.extend(table_lines)
+                    result.append("")
+            except PdfTableTimeoutError:
+                # The worker thread that ran find_tables() is abandoned,
+                # not killed, and may still be reading this document in
+                # the background - closing it here could race with that
+                # thread. Give up on the whole PDF and leave the
+                # document to be released once that thread finishes.
+                timed_out = True
+                raise
     finally:
-        document.close()
+        if not timed_out:
+            document.close()
 
     return "\n".join(result)
 
@@ -568,6 +668,89 @@ def is_supported_for_text_processing(path: Path) -> bool:
 
 def is_office_file(path: Path) -> bool:
     return path.suffix.lower() in OFFICE_EXTENSIONS
+
+
+def is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+# ------------------------------------------------------------
+# Image redaction
+# ------------------------------------------------------------
+
+def path_matches_redaction_signal(source: Path, replacements: dict) -> bool:
+    """
+    True if the file's own name or its immediate containing folder hints
+    it might be a logo/icon/brand asset: matches a dictionary term, or
+    contains one of IMAGE_REDACTION_KEYWORDS. This is a heuristic on the
+    name alone -- an image's actual pixel content is never inspected --
+    so it deliberately errs toward over-redacting rather than risking a
+    real logo slipping through under a neutral file name. Only the file
+    name and its direct parent are checked, not the whole ancestor
+    chain.
+    """
+    for segment in (source.parent.name, source.stem):
+        _, dict_count = anonymize_text(segment, replacements)
+        if dict_count > 0:
+            return True
+
+        lowered = segment.lower()
+        if any(keyword in lowered for keyword in IMAGE_REDACTION_KEYWORDS):
+            return True
+
+    return False
+
+
+def _read_svg_dimensions(source: Path):
+    text = source.read_text(encoding="utf-8", errors="ignore")
+
+    tag_match = re.search(r"<svg\b[^>]*>", text)
+    tag = tag_match.group(0) if tag_match else ""
+
+    width_match = re.search(r'width="([\d.]+)', tag)
+    height_match = re.search(r'height="([\d.]+)', tag)
+
+    if width_match and height_match:
+        return width_match.group(1), height_match.group(1)
+
+    viewbox_match = re.search(
+        r'viewBox="[\d.\-]+\s+[\d.\-]+\s+([\d.]+)\s+([\d.]+)"', tag
+    )
+    if viewbox_match:
+        return viewbox_match.group(1), viewbox_match.group(2)
+
+    return "300", "300"
+
+
+def blackout_image(source: Path, destination: Path) -> None:
+    """
+    Replaces an image with a same-dimensions, solid-black version in the
+    same format, so a file that might be a logo/icon isn't included in
+    the output at all -- content, not just the file name, is removed.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if source.suffix.lower() == ".svg":
+        width, height = _read_svg_dimensions(source)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{width}" height="{height}">'
+            '<rect width="100%" height="100%" fill="black"/></svg>'
+        )
+        destination.write_text(svg, encoding="utf-8")
+        return
+
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError(
+            "Missing Pillow. Install it with: pip install Pillow"
+        )
+
+    with Image.open(source) as original:
+        size = original.size
+
+    Image.new("RGB", size, color=(0, 0, 0)).save(destination)
 
 
 # ------------------------------------------------------------
@@ -809,9 +992,11 @@ def scan_files(
     archive's location, e.g. bundle.zip -> bundle/<path inside zip>.
 
     An archive that fails to extract, or that would exceed
-    MAX_ARCHIVE_DEPTH, is returned as-is (to be copied unchanged by the
-    normal file-processing path) instead of raising. Extraction failures
-    (but not depth-limit fallbacks, which are not errors) are appended to
+    MAX_ARCHIVE_DEPTH, is excluded from the result entirely instead of
+    raising or being copied in unchanged: its contents could not be
+    inspected, so copying it verbatim would put un-anonymized content
+    (dictionary terms, PII) into the output. Extraction failures (but
+    not depth-limit fallbacks, which are not errors) are appended to
     extraction_errors so the caller can fold them into its own error
     count.
     """
@@ -836,13 +1021,14 @@ def scan_files(
         if is_archive_file(path):
             if depth >= MAX_ARCHIVE_DEPTH:
                 # Deliberate policy fallback, not a failure: logged, but
-                # never added to extraction_errors.
+                # never added to extraction_errors. The archive is
+                # excluded rather than copied in unchanged, since its
+                # contents were never inspected/anonymized.
                 print(
                     f"WARNING: archive nesting exceeds depth limit "
-                    f"({MAX_ARCHIVE_DEPTH}), copying unchanged: {path}",
+                    f"({MAX_ARCHIVE_DEPTH}), excluding from output: {path}",
                     file=sys.stderr,
                 )
-                entries.append(ScanEntry(path, relative_path))
                 continue
 
             extract_dir = Path(tempfile.mkdtemp(prefix="anonymize_"))
@@ -856,7 +1042,6 @@ def scan_files(
                     file=sys.stderr,
                 )
                 extraction_errors.append(path)
-                entries.append(ScanEntry(path, relative_path))
                 continue
 
             temp_dirs.append(extract_dir)
@@ -877,6 +1062,66 @@ def scan_files(
         entries.append(ScanEntry(path, relative_path))
 
     return entries
+
+
+def anonymize_relative_path(relative_path: Path, replacements: dict) -> tuple:
+    """
+    Anonymizes every path segment (folder names, and the file name's
+    stem) using the same dictionary substitution as file contents -- the
+    output directory must not leak dictionary terms through its folder
+    or file names even when a file's own content is otherwise
+    anonymized (or isn't touched at all, e.g. a binary file copied
+    unchanged still lives under an anonymized folder). Returns the
+    rewritten path and how many dictionary substitutions were made in
+    it, so callers can add it to their own running total.
+
+    The final segment's extension is preserved untouched: it keeps the
+    file recognizable/openable, and it's what process_file's own
+    extension-swapping (e.g. .docx -> .md) operates on afterward.
+    """
+    parts = relative_path.parts
+
+    if not parts:
+        return relative_path, 0
+
+    total = 0
+    anonymized_parts = []
+
+    for part in parts[:-1]:
+        anonymized_part, count = anonymize_text(part, replacements)
+        anonymized_parts.append(anonymized_part)
+        total += count
+
+    file_name = parts[-1]
+    stem = Path(file_name).stem
+    suffix = Path(file_name).suffix
+    anonymized_stem, count = anonymize_text(stem, replacements)
+    anonymized_parts.append(anonymized_stem + suffix)
+    total += count
+
+    return Path(*anonymized_parts), total
+
+
+def anonymize_destinations(entries: list, replacements: dict) -> tuple:
+    """
+    Rewrites every entry's relative_destination via
+    anonymize_relative_path. Must run before deduplicate_destinations:
+    case-insensitive matching means two differently-cased source names
+    (BDR/, bdr/) can anonymize to the same destination, and dedup is
+    what resolves that collision. Returns the rewritten entries and the
+    total number of dictionary substitutions made across all of them.
+    """
+    total = 0
+    result = []
+
+    for entry in entries:
+        new_path, count = anonymize_relative_path(
+            entry.relative_destination, replacements
+        )
+        total += count
+        result.append(entry._replace(relative_destination=new_path))
+
+    return result, total
 
 
 def deduplicate_destinations(entries: list) -> list:
@@ -936,7 +1181,12 @@ def process_file(
     source: Path,
     destination: Path,
     replacements: dict,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
+    """
+    Returns (status, pii_count, dict_count): the outcome label, how many
+    PII fragments were redacted, and how many dictionary substitutions
+    were made in this file's content.
+    """
     suffix = source.suffix.lower()
 
     # Text/code files
@@ -947,70 +1197,79 @@ def process_file(
             # Keep binary/non-UTF8 files untouched.
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            return "copied-non-utf8", 0
+            return "copied-non-utf8", 0, 0
 
-        text = anonymize_text(text, replacements)
+        text, dict_count = anonymize_text(text, replacements)
         text, pii_count = redact_pii(text)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text, encoding="utf-8")
 
-        return "anonymized", pii_count
+        return "anonymized", pii_count, dict_count
 
     # DOCX -> MD
     if suffix == ".docx":
         markdown = convert_docx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # XLSX -> MD
     if suffix == ".xlsx":
         markdown = convert_xlsx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # PPTX -> MD
     if suffix == ".pptx":
         markdown = convert_pptx_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "office", pii_count
+        return "office", pii_count, dict_count
 
     # PDF -> MD
     if suffix == ".pdf":
         markdown = convert_pdf_to_markdown(source)
-        markdown = anonymize_text(markdown, replacements)
+        markdown, dict_count = anonymize_text(markdown, replacements)
         markdown, pii_count = redact_pii(markdown)
 
         destination = destination.with_suffix(".md")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(markdown, encoding="utf-8")
 
-        return "pdf", pii_count
+        return "pdf", pii_count, dict_count
+
+    # Image that might be a logo/icon/brand asset -> blacked out.
+    # An image whose name doesn't match the signal falls through to the
+    # unknown/binary copy-unchanged branch below, unaffected.
+    if is_image_file(source) and path_matches_redaction_signal(
+        source, replacements
+    ):
+        blackout_image(source, destination)
+        return "image", 0, 0
 
     # Unknown/binary file:
     # Copy it unchanged.
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 
-    return "copied", 0
+    return "copied", 0, 0
 
 
 # ------------------------------------------------------------
@@ -1103,6 +1362,13 @@ def main():
             extraction_errors,
         )
 
+        # Anonymize folder/file names before deduplicating: two
+        # differently-cased source names (BDR/, bdr/) can now land on
+        # the same destination, and dedup is what resolves that.
+        files, dictionary_replacements = anonymize_destinations(
+            files, replacements
+        )
+
         # An extracted archive can land on the same output path as a
         # plain sibling (data.zip next to data/) or as another archive
         # with the same stem. Rename instead of silently overwriting.
@@ -1139,6 +1405,7 @@ def main():
         anonymized = 0
         office_converted = 0
         pdf_converted = 0
+        images_redacted = 0
         copied = 0
         errors = 0
         pii_redacted = 0
@@ -1149,13 +1416,14 @@ def main():
             destination = output_root / entry.relative_destination
 
             try:
-                result, pii_count = process_file(
+                result, pii_count, dict_count = process_file(
                     entry.source,
                     destination,
                     replacements,
                 )
 
                 pii_redacted += pii_count
+                dictionary_replacements += dict_count
 
                 if result == "anonymized":
                     anonymized += 1
@@ -1163,6 +1431,8 @@ def main():
                     office_converted += 1
                 elif result == "pdf":
                     pdf_converted += 1
+                elif result == "image":
+                    images_redacted += 1
                 else:
                     copied += 1
 
@@ -1175,15 +1445,12 @@ def main():
                     file=sys.stderr,
                 )
 
-                # A file that cannot be processed is copied unchanged
-                # rather than dropped from the output entirely. The
-                # error is already counted and logged, so a failing
-                # fallback must not abort the run either.
-                try:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(entry.source, destination)
-                except Exception:
-                    pass
+                # Deliberately not copied unchanged: this tool exists to
+                # anonymize PII, and a file that failed to process is
+                # exactly the file we could not guarantee is safe. The
+                # error is already counted and logged; the file is
+                # simply excluded from the output rather than risking a
+                # raw, un-anonymized copy landing in it.
 
             processed += 1
 
@@ -1213,7 +1480,9 @@ def main():
         print(f"Text/code         : {anonymized:,}")
         print(f"Office -> Markdown: {office_converted:,}")
         print(f"PDF -> Markdown   : {pdf_converted:,}")
+        print(f"Images redacted   : {images_redacted:,}")
         print(f"Copied unchanged  : {copied:,}")
+        print(f"Dict replacements : {dictionary_replacements:,}")
         print(f"PII fragments     : {pii_redacted:,}")
         print(f"Errors            : {errors:,}")
         print(f"Processing time   : {format_duration(duration)}")
