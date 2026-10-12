@@ -922,6 +922,46 @@ def extract_archive(source: Path, dest_dir: Path) -> None:
     raise ValueError(f"Not a supported archive: {source}")
 
 
+def report_optional_tools() -> None:
+    """
+    Prints whether the optional system tools (Tesseract OCR and a RAR
+    extractor) are available - on PATH or in the default Windows install
+    folders the product itself falls back to - with an install command for
+    this OS for each one that is missing. scripts/install.sh and
+    scripts/install.ps1 call this, so the detection exists once here
+    instead of being re-implemented (and disagreeing) in each shell.
+    """
+    if sys.platform == "darwin":
+        install_tesseract = "brew install tesseract"
+        install_rar = "brew install unar"
+    elif sys.platform == "win32":
+        install_tesseract = "winget install UB-Mannheim.TesseractOCR"
+        install_rar = "winget install 7zip.7zip"
+    else:
+        install_tesseract = "sudo apt install tesseract-ocr"
+        install_rar = "sudo apt install unar"
+
+    rar_fallback = locate_rar_tool()
+
+    tesseract = shutil.which("tesseract") or locate_tesseract()
+    rar = (
+        shutil.which("unar")
+        or shutil.which("unrar")
+        or (rar_fallback[1] if rar_fallback else None)
+    )
+
+    print("Optional system tools:")
+
+    for label, found, install in (
+        ("Tesseract OCR (scanned PDF pages)", tesseract, install_tesseract),
+        ("RAR extraction (.rar archives)", rar, install_rar),
+    ):
+        if found:
+            print(f"  [ok]      {label}: {found}")
+        else:
+            print(f"  [missing] {label} - install with: {install}")
+
+
 # ------------------------------------------------------------
 # Progress bar
 # ------------------------------------------------------------

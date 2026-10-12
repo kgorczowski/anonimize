@@ -34,3 +34,14 @@ $requirementsPath = Join-Path $PSScriptRoot "..\requirements.txt"
 
 Write-Host "Using $(& $pythonExe --version) ($pythonExe)"
 & $pythonExe -m pip install -r $requirementsPath
+
+# Informational only: never fail the install over a missing optional tool.
+Write-Host ""
+Push-Location (Join-Path $PSScriptRoot "..")
+try {
+    & $pythonExe -c "import anonymize; anonymize.report_optional_tools()"
+} catch {
+    Write-Host "Could not check optional system tools: $_"
+} finally {
+    Pop-Location
+}

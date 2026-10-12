@@ -9,9 +9,12 @@ Run the setup script for your platform:
 - PowerShell (Windows): `.\scripts\install.ps1`
 - bash (macOS / Linux / Git Bash): `./scripts/install.sh`
 
-Both just install `requirements.txt` with whichever Python interpreter they
-find, so `pip install -r requirements.txt` works too if you already know
-your interpreter is set up correctly.
+Both install `requirements.txt` with whichever Python interpreter they find
+(so `pip install -r requirements.txt` works too if you already know your
+interpreter is set up correctly), then report whether the optional system
+tools are available — Tesseract for scanned PDFs and a `.rar` extractor —
+with the install command for your OS when one is missing. Tools installed
+in their default Windows folders count as available; no PATH change needed.
 
 ### Windows: `python` opens the Microsoft Store instead of running
 

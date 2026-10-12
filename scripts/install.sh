@@ -27,3 +27,7 @@ PYTHON="$(find_python)" || {
 
 echo "Using $("$PYTHON" --version) ($PYTHON)"
 "$PYTHON" -m pip install -r "$SCRIPT_DIR/../requirements.txt"
+
+# Informational only: never fail the install over a missing optional tool.
+echo
+(cd "$SCRIPT_DIR/.." && "$PYTHON" -c "import anonymize; anonymize.report_optional_tools()") || true
