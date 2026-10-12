@@ -827,11 +827,20 @@ def _tesseract_available() -> bool:
         import pytesseract
 
         located = anonymize.locate_tesseract()
+        original = pytesseract.pytesseract.tesseract_cmd
 
         if located:
             pytesseract.pytesseract.tesseract_cmd = located
 
-        pytesseract.get_tesseract_version()
+        try:
+            pytesseract.get_tesseract_version()
+        finally:
+            # This runs at collection time. Leave the process-wide setting as
+            # we found it, so the real OCR test depends on ocr_page doing its
+            # own configuration (the thing the fallback exists for) rather
+            # than on this probe having already done it.
+            pytesseract.pytesseract.tesseract_cmd = original
+
         return True
     except Exception:
         return False
