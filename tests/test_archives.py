@@ -322,13 +322,11 @@ def test_extract_archive_7z(tmp_path):
     assert (dest / "hello.txt").read_text() == "hello 7z"
 
 
-def test_extract_archive_raises_on_corrupt_rar(tmp_path):
-    pytest.importorskip("rarfile")
-
+def test_extract_archive_raises_on_corrupt_rar(tmp_path, isolated_rarfile):
     source = tmp_path / "broken.rar"
     source.write_bytes(b"not a real rar file")
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError):
         extract_archive(source, tmp_path / "extracted")
 
 
@@ -411,12 +409,14 @@ def test_locate_rar_tool_returns_none_when_nothing_is_installed(
 @pytest.fixture
 def isolated_rarfile(monkeypatch):
     """extract_archive reconfigures rarfile's module-level tool settings
-    and rarfile caches the tool it picks; restore all of it after the
-    test so tests cannot leak a tool choice into each other."""
+    and rarfile caches the tool it picks. Start every test from rarfile's
+    defaults and put everything back afterwards, so tests can neither leak
+    a tool choice into each other nor pass because an earlier test left
+    the right tool configured."""
     rarfile = pytest.importorskip("rarfile")
 
-    monkeypatch.setattr(rarfile, "UNRAR_TOOL", rarfile.UNRAR_TOOL)
-    monkeypatch.setattr(rarfile, "SEVENZIP_TOOL", rarfile.SEVENZIP_TOOL)
+    monkeypatch.setattr(rarfile, "UNRAR_TOOL", "unrar")
+    monkeypatch.setattr(rarfile, "SEVENZIP_TOOL", "7z")
     monkeypatch.setattr(rarfile, "CURRENT_SETUP", None)
 
     return rarfile
@@ -448,7 +448,11 @@ def test_extract_archive_rar_points_rarfile_at_a_located_tool(
         lambda: ("SEVENZIP_TOOL", r"C:\fake\7-Zip\7z.exe"),
     )
     monkeypatch.setattr(
-        rarfile, "tool_setup", lambda **kwargs: tool_setup_calls.append(kwargs)
+        rarfile,
+        "tool_setup",
+        lambda **kwargs: tool_setup_calls.append(
+            (kwargs, rarfile.SEVENZIP_TOOL)
+        ),
     )
     monkeypatch.setattr(rarfile, "RarFile", _FakeRarFile)
 
@@ -459,7 +463,7 @@ def test_extract_archive_rar_points_rarfile_at_a_located_tool(
     extract_archive(source, dest)
 
     assert rarfile.SEVENZIP_TOOL == r"C:\fake\7-Zip\7z.exe"
-    assert tool_setup_calls == [{"force": True}]
+    assert tool_setup_calls == [({"force": True}, r"C:\fake\7-Zip\7z.exe")]
     assert _FakeRarFile.extracted_to == str(dest)
 
 
@@ -513,15 +517,36 @@ def test_extract_archive_rar_names_the_real_requirements_when_no_tool(
 def test_extract_archive_extracts_a_real_compressed_rar5(
     tmp_path, isolated_rarfile
 ):
+    # Skip only when no candidate tool exists at all. If one is present (on
+    # PATH or in a default Windows folder) and extraction still fails, that
+    # is exactly the failure this test exists to catch.
+    #
+    # The default folders are listed here rather than read from
+    # anonymize.RAR_TOOL_COMMON_PATHS: a wrong path in that table must make
+    # this test fail, not skip, so the oracle cannot be the code under test.
+    default_tool_paths = (
+        r"C:\Program Files\WinRAR\UnRAR.exe",
+        r"C:\Program Files (x86)\WinRAR\UnRAR.exe",
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+    )
+    candidate_exists = (
+        anonymize.shutil.which("unrar")
+        or anonymize.shutil.which("unar")
+        or any(Path(path).is_file() for path in default_tool_paths)
+    )
+
+    if not candidate_exists:
+        pytest.skip(
+            "No RAR extraction tool (unrar, unar, WinRAR, 7-Zip) installed"
+        )
+
     fixture = (
         Path(__file__).parent / "fixtures" / "sample_rar5_compressed.rar"
     )
     dest = tmp_path / "extracted"
 
-    try:
-        extract_archive(fixture, dest)
-    except RuntimeError as exc:
-        pytest.skip(f"No working RAR extraction tool on this machine: {exc}")
+    extract_archive(fixture, dest)
 
     lines = (dest / "hello.txt").read_text(encoding="utf-8").splitlines()
 
