@@ -13,12 +13,12 @@ pip install -r requirements.txt
 
 Two dependencies are optional system tools (not pip packages), needed only for specific file types:
 
-| Needed for | Tool | Windows install |
-|---|---|---|
-| `.rar` archives | `unrar` (or `unar`/`bsdtar`) on PATH | `winget install RARLab.WinRAR` |
-| Scanned/OCR'd PDF pages | Tesseract OCR engine | `winget install UB-Mannheim.TesseractOCR` |
+| Needed for | Tool | macOS | Linux (Debian/Ubuntu) | Windows |
+|---|---|---|---|---|
+| `.rar` archives | `unar` or `unrar` | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
+| Scanned/OCR'd PDF pages | Tesseract OCR engine | `brew install tesseract` | `sudo apt install tesseract-ocr` | `winget install UB-Mannheim.TesseractOCR` |
 
-Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. If Tesseract is installed but not found, `anonymize.py` also checks the common Windows install locations directly, so it works even before you open a new terminal.
+Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. `bsdtar` and the older `p7zip` shipped with some Linux distributions can fail on compressed RAR5 archives, so prefer `unar` or `unrar` there. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
 
 ## Usage
 

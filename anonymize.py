@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 #
 # Optional system dependencies (beyond `pip install -r requirements.txt`):
-#   - .rar archives: the 'unrar' (or 'unar'/'bsdtar') tool must be on
-#     PATH. Windows: winget install RARLab.WinRAR
+#   - .rar archives: needs `unar` or `unrar` (bsdtar and older p7zip builds
+#     fail on some RAR5 archives, so they are not recommended).
+#     macOS: brew install unar. Linux: sudo apt install unar.
+#     Windows: winget install 7zip.7zip (or RARLab.WinRAR); found in its
+#     default install folder automatically, no PATH change needed.
 #   - Scanned PDFs (OCR): the Tesseract OCR engine must be installed.
-#     Windows: winget install UB-Mannheim.TesseractOCR
+#     macOS: brew install tesseract. Linux: sudo apt install tesseract-ocr.
+#     Windows: winget install UB-Mannheim.TesseractOCR (also found in its
+#     default install folder automatically).
 # Both are optional: without them, the affected archive/PDF is reported
 # as an error and the rest of the run continues normally.
+# scripts/install.sh and scripts/install.ps1 report which are missing.
 #
 # Known limitation: PII detection is regex-based and heuristic. In
 # particular, four-part version strings ("1.0.0.0" in .cs/.json/.xml or
