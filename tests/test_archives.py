@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import anonymize
 from anonymize import (
     classify_archive,
     archive_stem,
@@ -12,6 +13,7 @@ from anonymize import (
     deduplicate_destinations,
     is_archive_file,
     extract_archive,
+    locate_rar_tool,
     scan_files,
     ScanEntry,
     MAX_ARCHIVE_DEPTH,
@@ -328,6 +330,203 @@ def test_extract_archive_raises_on_corrupt_rar(tmp_path):
 
     with pytest.raises(Exception):
         extract_archive(source, tmp_path / "extracted")
+
+
+def test_locate_rar_tool_returns_none_when_unar_is_on_path(monkeypatch):
+    monkeypatch.setattr(
+        anonymize.shutil,
+        "which",
+        lambda name: "/usr/bin/unar" if name == "unar" else None,
+    )
+
+    assert locate_rar_tool() is None
+
+
+def test_locate_rar_tool_returns_none_when_unrar_is_on_path(monkeypatch):
+    monkeypatch.setattr(
+        anonymize.shutil,
+        "which",
+        lambda name: "/usr/bin/unrar" if name == "unrar" else None,
+    )
+
+    assert locate_rar_tool() is None
+
+
+def test_locate_rar_tool_finds_a_default_windows_install(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(anonymize.shutil, "which", lambda name: None)
+
+    fake_7zip = tmp_path / "7-Zip" / "7z.exe"
+    fake_7zip.parent.mkdir()
+    fake_7zip.write_bytes(b"")
+
+    monkeypatch.setattr(
+        anonymize,
+        "RAR_TOOL_COMMON_PATHS",
+        (("SEVENZIP_TOOL", str(fake_7zip)),),
+    )
+
+    assert locate_rar_tool() == ("SEVENZIP_TOOL", str(fake_7zip))
+
+
+def test_locate_rar_tool_prefers_the_first_existing_candidate(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(anonymize.shutil, "which", lambda name: None)
+
+    winrar = tmp_path / "WinRAR" / "UnRAR.exe"
+    sevenzip = tmp_path / "7-Zip" / "7z.exe"
+
+    for tool in (winrar, sevenzip):
+        tool.parent.mkdir()
+        tool.write_bytes(b"")
+
+    monkeypatch.setattr(
+        anonymize,
+        "RAR_TOOL_COMMON_PATHS",
+        (
+            ("UNRAR_TOOL", str(tmp_path / "missing" / "UnRAR.exe")),
+            ("UNRAR_TOOL", str(winrar)),
+            ("SEVENZIP_TOOL", str(sevenzip)),
+        ),
+    )
+
+    assert locate_rar_tool() == ("UNRAR_TOOL", str(winrar))
+
+
+def test_locate_rar_tool_returns_none_when_nothing_is_installed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(anonymize.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        anonymize,
+        "RAR_TOOL_COMMON_PATHS",
+        (("UNRAR_TOOL", str(tmp_path / "nope.exe")),),
+    )
+
+    assert locate_rar_tool() is None
+
+
+@pytest.fixture
+def isolated_rarfile(monkeypatch):
+    """extract_archive reconfigures rarfile's module-level tool settings
+    and rarfile caches the tool it picks; restore all of it after the
+    test so tests cannot leak a tool choice into each other."""
+    rarfile = pytest.importorskip("rarfile")
+
+    monkeypatch.setattr(rarfile, "UNRAR_TOOL", rarfile.UNRAR_TOOL)
+    monkeypatch.setattr(rarfile, "SEVENZIP_TOOL", rarfile.SEVENZIP_TOOL)
+    monkeypatch.setattr(rarfile, "CURRENT_SETUP", None)
+
+    return rarfile
+
+
+class _FakeRarFile:
+    def __init__(self, path):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def extractall(self, dest):
+        _FakeRarFile.extracted_to = str(dest)
+
+
+def test_extract_archive_rar_points_rarfile_at_a_located_tool(
+    monkeypatch, tmp_path, isolated_rarfile
+):
+    rarfile = isolated_rarfile
+    tool_setup_calls = []
+
+    monkeypatch.setattr(
+        anonymize,
+        "locate_rar_tool",
+        lambda: ("SEVENZIP_TOOL", r"C:\fake\7-Zip\7z.exe"),
+    )
+    monkeypatch.setattr(
+        rarfile, "tool_setup", lambda **kwargs: tool_setup_calls.append(kwargs)
+    )
+    monkeypatch.setattr(rarfile, "RarFile", _FakeRarFile)
+
+    source = tmp_path / "x.rar"
+    source.write_bytes(b"")
+    dest = tmp_path / "out"
+
+    extract_archive(source, dest)
+
+    assert rarfile.SEVENZIP_TOOL == r"C:\fake\7-Zip\7z.exe"
+    assert tool_setup_calls == [{"force": True}]
+    assert _FakeRarFile.extracted_to == str(dest)
+
+
+def test_extract_archive_rar_does_not_touch_rarfile_when_nothing_located(
+    monkeypatch, tmp_path, isolated_rarfile
+):
+    rarfile = isolated_rarfile
+    original_unrar = rarfile.UNRAR_TOOL
+    original_sevenzip = rarfile.SEVENZIP_TOOL
+    tool_setup_calls = []
+
+    monkeypatch.setattr(anonymize, "locate_rar_tool", lambda: None)
+    monkeypatch.setattr(
+        rarfile, "tool_setup", lambda **kwargs: tool_setup_calls.append(kwargs)
+    )
+    monkeypatch.setattr(rarfile, "RarFile", _FakeRarFile)
+
+    source = tmp_path / "x.rar"
+    source.write_bytes(b"")
+
+    extract_archive(source, tmp_path / "out")
+
+    assert rarfile.UNRAR_TOOL == original_unrar
+    assert rarfile.SEVENZIP_TOOL == original_sevenzip
+    assert tool_setup_calls == []
+
+
+def test_extract_archive_rar_names_the_real_requirements_when_no_tool(
+    monkeypatch, tmp_path, isolated_rarfile
+):
+    rarfile = isolated_rarfile
+
+    class NoToolRarFile(_FakeRarFile):
+        def extractall(self, dest):
+            raise rarfile.RarCannotExec("Cannot find working tool")
+
+    monkeypatch.setattr(anonymize, "locate_rar_tool", lambda: None)
+    monkeypatch.setattr(rarfile, "RarFile", NoToolRarFile)
+
+    source = tmp_path / "x.rar"
+    source.write_bytes(b"")
+
+    with pytest.raises(RuntimeError, match="unrar or unar"):
+        extract_archive(source, tmp_path / "out")
+
+
+# tests/fixtures/sample_rar5_compressed.rar is 124 bytes, made with RAR 7.00
+# (`rar a -ep -m3 -ma5`) from a hello.txt of 40 lines of
+# "VM contact: jan@example.com". It is compressed on purpose: rarfile reads
+# stored entries itself, only compressed ones need an external tool.
+def test_extract_archive_extracts_a_real_compressed_rar5(
+    tmp_path, isolated_rarfile
+):
+    fixture = (
+        Path(__file__).parent / "fixtures" / "sample_rar5_compressed.rar"
+    )
+    dest = tmp_path / "extracted"
+
+    try:
+        extract_archive(fixture, dest)
+    except RuntimeError as exc:
+        pytest.skip(f"No working RAR extraction tool on this machine: {exc}")
+
+    lines = (dest / "hello.txt").read_text(encoding="utf-8").splitlines()
+
+    assert len(lines) == 40
+    assert set(lines) == {"VM contact: jan@example.com"}
 
 
 def test_scan_files_returns_plain_files_with_matching_relative_path(tmp_path):

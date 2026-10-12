@@ -810,6 +810,37 @@ def is_archive_file(path: Path) -> bool:
     return classify_archive(path) is not None
 
 
+# rarfile only looks for its extraction tools on PATH, and neither the
+# WinRAR nor the 7-Zip Windows installer adds itself to PATH. Same problem
+# (and same remedy) as TESSERACT_COMMON_PATHS. Each entry is the rarfile
+# module setting to point at the tool, and the tool's default location.
+RAR_TOOL_COMMON_PATHS = (
+    ("UNRAR_TOOL", r"C:\Program Files\WinRAR\UnRAR.exe"),
+    ("UNRAR_TOOL", r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
+    ("SEVENZIP_TOOL", r"C:\Program Files\7-Zip\7z.exe"),
+    ("SEVENZIP_TOOL", r"C:\Program Files (x86)\7-Zip\7z.exe"),
+)
+
+
+def locate_rar_tool():
+    """
+    Returns (rarfile_setting_name, path) for a RAR-capable tool that is
+    installed but not on PATH, so rarfile can be pointed at it directly.
+    Returns None if unrar or unar is already on PATH (rarfile finds those
+    itself), or if no known install location has a tool. bsdtar and old
+    p7zip builds are deliberately not considered: they fail on compressed
+    RAR5 archives.
+    """
+    if shutil.which("unrar") or shutil.which("unar"):
+        return None
+
+    for setting, candidate in RAR_TOOL_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return setting, candidate
+
+    return None
+
+
 def extract_archive(source: Path, dest_dir: Path) -> None:
     kind = classify_archive(source)
 
@@ -868,15 +899,23 @@ def extract_archive(source: Path, dest_dir: Path) -> None:
             )
 
         try:
+            located = locate_rar_tool()
+
+            if located is not None:
+                setting, path = located
+                setattr(rarfile, setting, path)
+                rarfile.tool_setup(force=True)
+
             with rarfile.RarFile(source) as archive:
                 archive.extractall(dest_dir)
         except rarfile.NeedFirstVolume:
             raise
         except rarfile.Error as exc:
             raise RuntimeError(
-                "Cannot extract RAR archive. This usually means the "
-                "'unrar' tool is not installed and on PATH, or the "
-                f"archive is corrupt/password-protected: {exc}"
+                "Cannot extract RAR archive. Extracting .rar needs a "
+                "RAR-capable tool: unrar or unar (on Windows also WinRAR "
+                "or 7-Zip). It was not found, or the archive is "
+                f"corrupt/password-protected: {exc}"
             ) from exc
         return
 
