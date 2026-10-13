@@ -1,0 +1,78 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # Makes the Windows `py` launcher (used by the install scripts) pick the
+      # Python that setup-python installed instead of the newest preinstalled.
+      PY_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr unar
+
+      - name: Install system tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract unar
+
+      # 7-Zip, which handles .rar here, ships on the Windows image.
+      - name: Install system tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install tesseract -y --no-progress
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Informational: shows where each tool resolves on this runner so a
+      # first-run failure can be read without guessing (for example whether
+      # 7z is already on PATH on the Windows image, which would stop the real
+      # RAR test from proving the default-folder fallback).
+      - name: Show where the optional tools resolve
+        shell: bash
+        run: |
+          for tool in tesseract unar unrar 7z 7zz bsdtar; do
+            printf '%-9s' "$tool"
+            command -v "$tool" || echo "(not on PATH)"
+          done
+
+      - name: Run tests (fails if any test is skipped)
+        shell: bash
+        run: bash scripts/run-tests.sh
+
+      - name: Smoke-test scripts/install.sh
+        shell: bash
+        run: bash scripts/install.sh
+
+      - name: Smoke-test scripts/install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\install.ps1

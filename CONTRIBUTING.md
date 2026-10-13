@@ -50,3 +50,20 @@ If `gh` isn't recognized afterward, it's a PATH problem:
 - **Linux** — distro package managers (`apt`, `dnf`, `pacman`) add it to
   PATH automatically. A manual tarball install needs the same `export
   PATH=...` line as macOS, in `~/.bashrc` / `~/.zshrc`.
+
+### Tests and continuous integration
+
+`python -m pytest` runs the suite normally; tests that need an optional
+system tool (Tesseract, a `.rar` extractor) skip themselves when it is
+missing. CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu, macOS
+and Windows with those tools installed, through `scripts/run-tests.sh`,
+which additionally fails if *any* test was skipped — so a green run means
+the OCR and RAR paths really ran on every OS. The same script works
+locally: `bash scripts/run-tests.sh`.
+
+To reproduce the Linux job on your machine (needs Docker; works from
+Windows, macOS and Linux):
+
+```bash
+bash scripts/test-in-docker.sh
+```
