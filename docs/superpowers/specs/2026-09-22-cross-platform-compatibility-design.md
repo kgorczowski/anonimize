@@ -50,13 +50,20 @@ code clean, and running the real suite confirmed it:
    | `unrar` (Ubuntu 24.04) | works |
    | `unar` (Ubuntu 24.04) | works |
    | `bsdtar` (libarchive-tools, Ubuntu 24.04) | fails (`BadRarFile`) |
-   | `7z` (p7zip 16.02, Ubuntu 24.04) | fails (`BadRarFile`) |
+   | distro `7z` without the non-free RAR codec (7-Zip 23.01 from `p7zip-full`, Ubuntu 24.04) | fails (`BadRarFile`); works once `p7zip-rar` is installed |
    | 7-Zip 26.02 on Windows, via absolute path | works |
    | Windows built-in `tar.exe` (bsdtar 3.8.8) | fails (`BadRarFile`) |
 
    So the documented "`unrar` (or `unar`/`bsdtar`)" is wrong about
    `bsdtar`, and `unar` is the better cross-platform recommendation: free,
    in the standard repositories of Homebrew and Debian/Ubuntu.
+
+   Correction (found by the final review, then re-measured): the distro
+   `7z` row was first labelled "p7zip 16.02", which blamed the tool's age.
+   Debian/Ubuntu's `p7zip-full` is a transitional package whose version
+   string says 16.02 but which ships 7-Zip 23.01 (Debian 12: 26.02); it
+   fails only because the non-free RAR codec package (`p7zip-rar` /
+   `7zip-rar`) is not installed, and extracts the fixture once it is.
 3. **On Windows, `.rar` extraction fails out of the box.** `rarfile` only
    looks for tools on PATH. On the dev machine 7-Zip is installed but not
    on PATH and WinRAR is absent, so extracting a compressed RAR fails with

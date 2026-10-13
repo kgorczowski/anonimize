@@ -29,6 +29,19 @@
 
 ---
 
+## Execution notes: where what shipped differs from the steps below
+
+The steps below are the plan as written. Review found defects in several of its code blocks; the committed files are authoritative. The revised blocks are listed here so a re-execution does not reintroduce the bugs.
+
+- **Task 1 tests** (`isolated_rarfile`, the corrupt-RAR test, the wiring test, the real-extraction test) were revised in 3d786ed and d8b1798: the fixture starts from rarfile's defaults; the real test skips only when no candidate tool exists (an independent oracle with literal paths) and otherwise fails; the wiring test pins `setattr`-before-`tool_setup`; and the real test hides rarfile's PATH-based `7z`/`7zz`/`bsdtar` names so the default-folder fallback is really exercised on a runner that already has a `7z` shim on PATH. See `tests/test_archives.py`.
+- **Task 2:** `scripts/install.ps1` uses `Push-Location -LiteralPath` inside the `try` and ends with `exit $pipExit` (d36f496, d8b1798); `report_optional_tools()` looks up `unrar` before `unar` (d8b1798). The suite is 187 tests at the end (170 + 9 + 6 + 2).
+- **Task 3 wording** was corrected in d8b1798: `.rar` needs `unar` or `unrar` (Windows: 7-Zip or WinRAR); the distro `7z` fails because the non-free RAR codec package (`7zip-rar` / `p7zip-rar`) is missing, not because it is old. README.md and CONTRIBUTING.md also gained a virtual-environment note (PEP 668 platforms).
+- **Task 4:** the OCR probe restores `pytesseract`'s `tesseract_cmd` afterwards (corrected in the plan before execution, 59b7fe4).
+- **Task 5:** `scripts/run-tests.sh` appends `-q --color=no -rfEs` after the caller's arguments, matches `SKIPPED [n]` lines as well as the summary line, and emits `::error::` annotations on GitHub Actions; the workflow uses `actions/checkout@v7` and `actions/setup-python@v7` and a diagnostic step that also emits `::notice::` annotations; `scripts/test-in-docker.sh` documents that it approximates the CI job (8575698, d8b1798). See `scripts/` and `.github/workflows/tests.yml`.
+- **Evidence correction:** the spec and this plan first labelled the failing `7z` row "p7zip 16.02"; it was 7-Zip 23.01 (package `p7zip-full`, version string `16.02+transitional.1`) without the RAR codec package. See the spec.
+
+---
+
 ## File Structure
 
 - **Modify:** `anonymize.py` — `RAR_TOOL_COMMON_PATHS`, `locate_rar_tool()`, the RAR branch of `extract_archive()`, `report_optional_tools()`, header comment.
@@ -348,9 +361,9 @@ def locate_rar_tool():
     Returns (rarfile_setting_name, path) for a RAR-capable tool that is
     installed but not on PATH, so rarfile can be pointed at it directly.
     Returns None if unrar or unar is already on PATH (rarfile finds those
-    itself), or if no known install location has a tool. bsdtar and old
-    p7zip builds are deliberately not considered: they fail on compressed
-    RAR5 archives.
+    itself), or if no known install location has a tool. bsdtar and a
+    distro 7z without the non-free RAR codec are deliberately not
+    considered: they can fail on compressed RAR5 archives.
     """
     if shutil.which("unrar") or shutil.which("unar"):
         return None
@@ -739,8 +752,10 @@ Replace it with:
 
 ```python
 # Optional system dependencies (beyond `pip install -r requirements.txt`):
-#   - .rar archives: needs `unar` or `unrar` (bsdtar and older p7zip builds
-#     fail on some RAR5 archives, so they are not recommended).
+#   - .rar archives: needs `unar` or `unrar` (on Windows, 7-Zip or WinRAR
+#     also work). Not recommended: bsdtar can fail on compressed RAR5
+#     archives, and Debian/Ubuntu's 7z cannot decompress RAR at all unless
+#     the non-free 7zip-rar (or p7zip-rar) package is installed.
 #     macOS: brew install unar. Linux: sudo apt install unar.
 #     Windows: winget install 7zip.7zip (or RARLab.WinRAR); found in its
 #     default install folder automatically, no PATH change needed.
@@ -775,10 +790,10 @@ Two dependencies are optional system tools (not pip packages), needed only for s
 
 | Needed for | Tool | macOS | Linux (Debian/Ubuntu) | Windows |
 |---|---|---|---|---|
-| `.rar` archives | `unar` or `unrar` | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
+| `.rar` archives | `unar` or `unrar` (Windows: 7-Zip or WinRAR) | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
 | Scanned/OCR'd PDF pages | Tesseract OCR engine | `brew install tesseract` | `sudo apt install tesseract-ocr` | `winget install UB-Mannheim.TesseractOCR` |
 
-Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. `bsdtar` and the older `p7zip` shipped with some Linux distributions can fail on compressed RAR5 archives, so prefer `unar` or `unrar` there. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
+Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. On macOS and Linux prefer `unar` or `unrar`: `bsdtar` can fail on compressed RAR5 archives, and Debian/Ubuntu's `7z` cannot decompress RAR at all unless the non-free `7zip-rar` (or `p7zip-rar`) package is installed. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
 ```
 
 - [ ] **Step 3: Run the full suite**
@@ -1133,11 +1148,11 @@ Run `PYTHON=py bash scripts/run-tests.sh` (Windows/Python 3.14, zero skips) and 
 
 - [ ] **Step 3: Read the first CI results**
 
-The repository is public. After the PR exists, read run and job status unauthenticated from `https://api.github.com/repos/kgorczowski/anonimize/actions/runs?branch=cross-platform-compat` and `.../actions/runs/<id>/jobs` (step names and conclusions); read failing logs through the run's page in the built-in browser (the log-download API needs auth).
+The repository is public, but GitHub requires a signed-in session to view workflow run logs, so logs are NOT readable anonymously. Read what is: run and job conclusions from `https://api.github.com/repos/kgorczowski/anonimize/actions/runs?branch=cross-platform-compat` and `.../actions/runs/<id>/jobs` (step names and conclusions), and the check-run annotations from `.../check-runs/<job id>/annotations`. The diagnostic step emits the tool-resolution table as `::notice::` annotations, and `scripts/run-tests.sh` emits failing and skipped test lines as `::error::` annotations on GitHub Actions, so most first-run problems can be read this way. For anything more, ask the user to paste the log or to sign in to GitHub in the built-in browser pane.
 
 - [ ] **Step 4: Triage failures forward on the same branch**
 
-Expected first-run risks, in order of likelihood: (1) a macOS-only test failure (case-insensitive APFS, `/private/var` temp paths) — never run before; (2) the Windows job's 7-Zip being too old for compressed RAR5 (the evidence: 7-Zip 26.02 works, p7zip 16.02 does not) — fix by installing a current 7-Zip with `choco install 7zip -y` in the Windows setup step; (3) `choco install tesseract` placing the binary somewhere `TESSERACT_COMMON_PATHS` does not cover — the zero-skips guard will say so; (4) the zero-skips guard tripping on a legitimately platform-skipped test — decide per test whether the test or the guard is wrong, never by loosening the guard silently. Each fix is its own commit, re-verified locally where possible, pushed to the PR branch.
+Expected first-run risks, in order of likelihood: (1) a macOS-only failure — case-insensitive APFS, `/private/var` temp paths, BSD `mktemp` under bash 3.2, `brew install` link conflicts, or the OCR assertion under Homebrew's Tesseract 5.5.3; none of it has ever run; (2) on Windows, `choco install tesseract` installs to `C:\Program Files\Tesseract-OCR` and only edits the registry PATH, so Tesseract is expected to be OFF PATH in the job (the diagnostic annotations should say `tesseract = (not on PATH)`), which is what makes the OCR test exercise `locate_tesseract` — if it shows up on PATH the fallback is not being exercised; (3) on Windows the image already puts a Chocolatey `7z` shim on PATH and ships 7-Zip 26.03 (so "7-Zip too old" is not a risk); the real RAR test hides rarfile's PATH-based `7z`/`7zz`/`bsdtar` lookup, so it passes only through `unar`/`unrar` or the default-folder fallback; a failure there means the fallback itself is broken on the image; (4) the zero-skips guard tripping on a legitimately platform-skipped test — decide per test whether the test or the guard is wrong, never by loosening the guard silently. No run starts until the PR is opened (the workflow triggers on pull requests and on pushes to `main`). Each fix is its own commit, re-verified locally where possible, pushed to the PR branch.
 
 ---
 
