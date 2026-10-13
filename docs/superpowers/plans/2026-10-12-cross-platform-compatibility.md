@@ -1050,6 +1050,18 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
 
+      # Informational: shows where each tool resolves on this runner so a
+      # first-run failure can be read without guessing (for example whether
+      # 7z is already on PATH on the Windows image, which would stop the real
+      # RAR test from proving the default-folder fallback).
+      - name: Show where the optional tools resolve
+        shell: bash
+        run: |
+          for tool in tesseract unar unrar 7z 7zz bsdtar; do
+            printf '%-9s' "$tool"
+            command -v "$tool" || echo "(not on PATH)"
+          done
+
       - name: Run tests (fails if any test is skipped)
         shell: bash
         run: bash scripts/run-tests.sh
