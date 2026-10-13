@@ -1004,7 +1004,9 @@ class ProgressBar:
 
         elapsed = time.monotonic() - self.start_time
 
-        if self.current > 0:
+        # Windows + Python < 3.13: the monotonic clock ticks every ~15.6 ms,
+        # so a fast first file can leave elapsed at exactly zero.
+        if self.current > 0 and elapsed > 0:
             rate = self.current / elapsed
             remaining = (self.total - self.current) / rate
         else:
