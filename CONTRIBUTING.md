@@ -59,10 +59,18 @@ missing. CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu, macOS
 and Windows with those tools installed, through `scripts/run-tests.sh`,
 which additionally fails if *any* test was skipped — so a green run means
 the OCR and RAR paths really ran on every OS. The same script works
-locally: `bash scripts/run-tests.sh`.
+locally: `bash scripts/run-tests.sh`. The interpreter is chosen with the
+`PYTHON` variable and defaults to `python`, which does not exist (or is the
+Microsoft Store stub) on a default Windows machine and may be missing on
+macOS or Debian/Ubuntu, so set it there:
 
-To reproduce the Linux job on your machine (needs Docker; works from
-Windows, macOS and Linux):
+```bash
+PYTHON=py bash scripts/run-tests.sh       # Windows (Git Bash)
+PYTHON=python3 bash scripts/run-tests.sh  # macOS / Linux
+```
+
+To reproduce the Linux job on your machine (needs Docker and bash, so on
+Windows run it from Git Bash or WSL):
 
 ```bash
 bash scripts/test-in-docker.sh

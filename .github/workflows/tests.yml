@@ -26,9 +26,9 @@ jobs:
       # Python that setup-python installed instead of the newest preinstalled.
       PY_PYTHON: "3.11"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -37,6 +37,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # Keep tesseract-ocr and unar in sync with scripts/test-in-docker.sh,
+          # which reproduces this Linux job locally.
           sudo apt-get install -y tesseract-ocr unar
 
       - name: Install system tools (macOS)
@@ -55,14 +57,18 @@ jobs:
       # Informational: shows where each tool resolves on this runner so a
       # first-run failure can be read without guessing (for example whether
       # 7z is already on PATH on the Windows image, which would stop the real
-      # RAR test from proving the default-folder fallback).
+      # RAR test from proving the default-folder fallback). The last line is
+      # the product's own view of the same tools; the install smoke steps that
+      # also print it are skipped whenever the test step fails, which is when
+      # a first-run failure needs reading. This step must never fail.
       - name: Show where the optional tools resolve
         shell: bash
         run: |
           for tool in tesseract unar unrar 7z 7zz bsdtar; do
-            printf '%-9s' "$tool"
+            printf '%-10s' "$tool"
             command -v "$tool" || echo "(not on PATH)"
           done
+          python -c "import anonymize; anonymize.report_optional_tools()" || true
 
       - name: Run tests (fails if any test is skipped)
         shell: bash

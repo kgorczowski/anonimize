@@ -15,7 +15,11 @@ trap 'rm -f "$LOG"' EXIT
 
 "$PYTHON" -m pytest -q -rs "$@" | tee "$LOG"
 
-if grep -Eq '[0-9]+ skipped' "$LOG"; then
+# Two patterns on purpose: pytest drops the "N skipped" summary line once the
+# verbosity is lowered further (a -q from the caller, or PYTEST_ADDOPTS=-q or
+# an addopts entry in a pytest config), but the SKIPPED lines that -rs asks
+# for are always printed. A run without skips prints neither.
+if grep -Eq 'SKIPPED \[[0-9]+\]|[0-9]+ skipped' "$LOG"; then
     echo >&2
     echo "ERROR: tests were skipped. Every optional dependency should be installed here, so a skip means one is missing or not detected." >&2
     exit 1
