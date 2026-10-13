@@ -515,7 +515,7 @@ def test_extract_archive_rar_names_the_real_requirements_when_no_tool(
 # "VM contact: jan@example.com". It is compressed on purpose: rarfile reads
 # stored entries itself, only compressed ones need an external tool.
 def test_extract_archive_extracts_a_real_compressed_rar5(
-    tmp_path, isolated_rarfile
+    tmp_path, monkeypatch, isolated_rarfile
 ):
     # Skip only when no candidate tool exists at all. If one is present (on
     # PATH or in a default Windows folder) and extraction still fails, that
@@ -545,6 +545,22 @@ def test_extract_archive_extracts_a_real_compressed_rar5(
         Path(__file__).parent / "fixtures" / "sample_rar5_compressed.rar"
     )
     dest = tmp_path / "extracted"
+
+    # rarfile also tries 7z, 7zz and bsdtar from PATH on its own, and GitHub's
+    # Windows image has a Chocolatey 7z shim on PATH: there this test would
+    # pass even with a broken default-folder fallback. Point those settings at
+    # names that cannot exist, so extraction can succeed only through unrar or
+    # unar on PATH, or through the tool that extract_archive itself locates
+    # (its own assignment overrides the hidden name).
+    monkeypatch.setattr(
+        isolated_rarfile, "SEVENZIP_TOOL", "anonymize-test-no-7z"
+    )
+    monkeypatch.setattr(
+        isolated_rarfile, "SEVENZIP2_TOOL", "anonymize-test-no-7zz"
+    )
+    monkeypatch.setattr(
+        isolated_rarfile, "BSDTAR_TOOL", "anonymize-test-no-bsdtar"
+    )
 
     extract_archive(fixture, dest)
 

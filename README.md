@@ -11,14 +11,16 @@ A command-line tool that recursively walks a directory, anonymizes text and code
 pip install -r requirements.txt
 ```
 
+On macOS (Homebrew Python) and Debian/Ubuntu, `pip` refuses to install into the system Python (it is "externally managed"), so create a virtual environment first: `python3 -m venv .venv` then `. .venv/bin/activate` (on Debian/Ubuntu run `sudo apt install python3-venv` before that). On Windows: `py -m venv .venv` then `.venv\Scripts\Activate.ps1`.
+
 Two dependencies are optional system tools (not pip packages), needed only for specific file types:
 
 | Needed for | Tool | macOS | Linux (Debian/Ubuntu) | Windows |
 |---|---|---|---|---|
-| `.rar` archives | `unar` or `unrar` | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
+| `.rar` archives | `unar` or `unrar` (Windows: 7-Zip or WinRAR) | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
 | Scanned/OCR'd PDF pages | Tesseract OCR engine | `brew install tesseract` | `sudo apt install tesseract-ocr` | `winget install UB-Mannheim.TesseractOCR` |
 
-Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. `bsdtar` and the older `p7zip` shipped with some Linux distributions can fail on compressed RAR5 archives, so prefer `unar` or `unrar` there. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
+Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. On macOS and Linux prefer `unar` or `unrar`: `bsdtar` can fail on compressed RAR5 archives, and Debian/Ubuntu's `7z` cannot decompress RAR at all unless the non-free `7zip-rar` (or `p7zip-rar`) package is installed. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
 
 ## Usage
 

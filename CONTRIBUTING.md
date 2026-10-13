@@ -16,6 +16,14 @@ tools are available — Tesseract for scanned PDFs and a `.rar` extractor —
 with the install command for your OS when one is missing. Tools installed
 in their default Windows folders count as available; no PATH change needed.
 
+Homebrew Python on macOS and the system Python on Debian/Ubuntu are
+"externally managed" (PEP 668) and refuse `pip install` outside a virtual
+environment, so `./scripts/install.sh` fails there on its first step: create
+one first with `python3 -m venv .venv` then `. .venv/bin/activate` (on
+Debian/Ubuntu install the venv module before that with
+`sudo apt install python3-venv`), or on Windows with `py -m venv .venv` then
+`.venv\Scripts\Activate.ps1`. `.venv/` is already gitignored.
+
 ### Windows: `python` opens the Microsoft Store instead of running
 
 Windows ships a Store-redirect stub for `python`/`python3` on PATH that only

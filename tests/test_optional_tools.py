@@ -25,8 +25,46 @@ def test_report_optional_tools_lists_what_is_on_path(monkeypatch, capsys):
         "[ok]      Tesseract OCR (scanned PDF pages): /usr/bin/tesseract"
         in out
     )
-    assert "[ok]      RAR extraction (.rar archives): /usr/bin/unar" in out
+    # The fake `which` answers every name, so this also pins the lookup
+    # order: unrar first, like rarfile and locate_rar_tool.
+    assert "[ok]      RAR extraction (.rar archives): /usr/bin/unrar" in out
     assert "[missing]" not in out
+
+
+def test_report_optional_tools_finds_unar_when_it_is_the_only_rar_tool(
+    monkeypatch, capsys
+):
+    _no_tools(monkeypatch)
+    monkeypatch.setattr(
+        anonymize.shutil,
+        "which",
+        lambda name: "/usr/bin/unar" if name == "unar" else None,
+    )
+
+    anonymize.report_optional_tools()
+
+    out = capsys.readouterr().out
+
+    assert "[ok]      RAR extraction (.rar archives): /usr/bin/unar" in out
+    assert "[missing] RAR extraction" not in out
+
+
+def test_report_optional_tools_finds_unrar_when_it_is_the_only_rar_tool(
+    monkeypatch, capsys
+):
+    _no_tools(monkeypatch)
+    monkeypatch.setattr(
+        anonymize.shutil,
+        "which",
+        lambda name: "/usr/bin/unrar" if name == "unrar" else None,
+    )
+
+    anonymize.report_optional_tools()
+
+    out = capsys.readouterr().out
+
+    assert "[ok]      RAR extraction (.rar archives): /usr/bin/unrar" in out
+    assert "[missing] RAR extraction" not in out
 
 
 def test_report_optional_tools_counts_default_folder_installs_as_found(

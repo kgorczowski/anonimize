@@ -49,5 +49,6 @@ try {
     Write-Host "Could not check optional system tools: $_"
 }
 
-# The check above runs native commands; give the script pip's exit code back.
-$global:LASTEXITCODE = $pipExit
+# The check above runs native commands; give the script pip's exit code back,
+# also under `powershell -File`, where a script otherwise exits 0.
+exit $pipExit

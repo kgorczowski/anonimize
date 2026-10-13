@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 #
 # Optional system dependencies (beyond `pip install -r requirements.txt`):
-#   - .rar archives: needs `unar` or `unrar` (bsdtar and older p7zip builds
-#     fail on some RAR5 archives, so they are not recommended).
+#   - .rar archives: needs `unar` or `unrar` (on Windows, 7-Zip or WinRAR
+#     also work). Not recommended: bsdtar can fail on compressed RAR5
+#     archives, and Debian/Ubuntu's 7z cannot decompress RAR at all unless
+#     the non-free 7zip-rar (or p7zip-rar) package is installed.
 #     macOS: brew install unar. Linux: sudo apt install unar.
 #     Windows: winget install 7zip.7zip (or RARLab.WinRAR); found in its
 #     default install folder automatically, no PATH change needed.
@@ -833,9 +835,9 @@ def locate_rar_tool():
     Returns (rarfile_setting_name, path) for a RAR-capable tool that is
     installed but not on PATH, so rarfile can be pointed at it directly.
     Returns None if unrar or unar is already on PATH (rarfile finds those
-    itself), or if no known install location has a tool. bsdtar and old
-    p7zip builds are deliberately not considered: they fail on compressed
-    RAR5 archives.
+    itself), or if no known install location has a tool. bsdtar and a
+    distro 7z without the non-free RAR codec are deliberately not
+    considered: they can fail on compressed RAR5 archives.
     """
     if shutil.which("unrar") or shutil.which("unar"):
         return None
@@ -951,8 +953,8 @@ def report_optional_tools() -> None:
 
     tesseract = shutil.which("tesseract") or locate_tesseract()
     rar = (
-        shutil.which("unar")
-        or shutil.which("unrar")
+        shutil.which("unrar")
+        or shutil.which("unar")
         or (rar_fallback[1] if rar_fallback else None)
     )
 

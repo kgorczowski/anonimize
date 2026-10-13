@@ -55,20 +55,26 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       # Informational: shows where each tool resolves on this runner so a
-      # first-run failure can be read without guessing (for example whether
-      # 7z is already on PATH on the Windows image, which would stop the real
-      # RAR test from proving the default-folder fallback). The last line is
-      # the product's own view of the same tools; the install smoke steps that
-      # also print it are skipped whenever the test step fails, which is when
-      # a first-run failure needs reading. This step must never fail.
+      # first-run failure can be read without guessing. The same lines are
+      # also emitted as notice annotations, which can be read without signing
+      # in to GitHub (the raw log cannot). On the Windows image 7z IS on PATH
+      # (a Chocolatey shim), so the real RAR test hides rarfile's PATH-based
+      # 7z/7zz/bsdtar lookup and proves the default-folder fallback instead.
       - name: Show where the optional tools resolve
         shell: bash
         run: |
           for tool in tesseract unar unrar 7z 7zz bsdtar; do
-            printf '%-10s' "$tool"
-            command -v "$tool" || echo "(not on PATH)"
+            where="$(command -v "$tool" || echo "(not on PATH)")"
+            printf '%-10s%s\n' "$tool" "$where"
+            echo "::notice title=tool lookup::$tool = $where"
           done
-          python -c "import anonymize; anonymize.report_optional_tools()" || true
+          report="$(python -c "import anonymize; anonymize.report_optional_tools()" 2>&1 || true)"
+          echo "$report"
+          echo "$report" | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              echo "::notice title=report_optional_tools::$line"
+            fi
+          done
 
       - name: Run tests (fails if any test is skipped)
         shell: bash
