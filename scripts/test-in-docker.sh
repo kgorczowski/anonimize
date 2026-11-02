@@ -3,9 +3,13 @@
 # Linux-only failures can be reproduced locally (for example from Windows
 # with Docker Desktop). Requires Docker and bash.
 #
-# This approximates the Linux CI job; it is not an exact copy of it:
-#   - Same OS and apt packages, but Ubuntu 24.04's own Python (3.12), while
-#     CI pins Python 3.11 with actions/setup-python.
+# This approximates the Linux CI job, which .github/workflows/tests.yml pins
+# to the ubuntu-24.04 runner (change both together to move to a newer
+# release). It is not an exact copy of it:
+#   - Same OS release and the same extra apt packages (tesseract-ocr, unar),
+#     but a bare image rather than the hosted runner image, and Ubuntu
+#     24.04's own Python (3.12), while CI pins Python 3.11 with
+#     actions/setup-python.
 #   - It copies your WORKING TREE, including uncommitted and untracked
 #     files, whereas CI only sees what is committed.
 set -e

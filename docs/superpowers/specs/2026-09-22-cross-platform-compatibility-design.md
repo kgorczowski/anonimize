@@ -131,8 +131,11 @@ end to end — wherever the product itself could run OCR.
 
 ### 5. GitHub Actions CI
 
-New `.github/workflows/tests.yml`: matrix over `ubuntu-latest`,
-`macos-latest`, `windows-latest`; Python 3.11 (the tool's stated floor is
+New `.github/workflows/tests.yml`: matrix over `ubuntu-24.04` (pinned, not
+`ubuntu-latest`: GitHub began migrating that label to Ubuntu 26.04 on
+2026-10-19, a 1-2 month rollout during which it can land on either image;
+the pin also matches `scripts/test-in-docker.sh`), `macos-latest`,
+`windows-latest`; Python 3.11 (the tool's stated floor is
 3.9, CI intentionally stays at one version; widening the matrix is a
 one-line change); triggers on push to `main` and on pull requests;
 least-privilege `permissions: contents: read`; per-job timeout (the project

@@ -38,6 +38,8 @@ The steps below are the plan as written. Review found defects in several of its 
 - **Task 3 wording** was corrected in d8b1798: `.rar` needs `unar` or `unrar` (Windows: 7-Zip or WinRAR); the distro `7z` fails because the non-free RAR codec package (`7zip-rar` / `p7zip-rar`) is missing, not because it is old. README.md and CONTRIBUTING.md also gained a virtual-environment note (PEP 668 platforms).
 - **Task 4:** the OCR probe restores `pytesseract`'s `tesseract_cmd` afterwards (corrected in the plan before execution, 59b7fe4).
 - **Task 5:** `scripts/run-tests.sh` appends `-q --color=no -rfEs` after the caller's arguments, matches `SKIPPED [n]` lines as well as the summary line, and emits `::error::` annotations on GitHub Actions; the workflow uses `actions/checkout@v7` and `actions/setup-python@v7` and a diagnostic step that also emits `::notice::` annotations; `scripts/test-in-docker.sh` documents that it approximates the CI job (8575698, d8b1798). See `scripts/` and `.github/workflows/tests.yml`.
+- **Linux runner (2026-11-02):** the workflow matrix uses `ubuntu-24.04` instead of `ubuntu-latest` (the Task 5 workflow block below was updated to match), because GitHub began moving `ubuntu-latest` to Ubuntu 26.04 on 2026-10-19 (gradual, so one label can land on either image); keep the label and the `ubuntu:24.04` tag in `scripts/test-in-docker.sh` in step.
+- **ProgressBar (2026-10-13):** the first CI run found a division by zero in `ProgressBar.update` on Windows with Python 3.11 (its monotonic clock ticks every 15.6 ms before Python 3.13); fixed in 19fc378, outside this plan's tasks.
 - **Evidence correction:** the spec and this plan first labelled the failing `7z` row "p7zip 16.02"; it was 7-Zip 23.01 (package `p7zip-full`, version string `16.02+transitional.1`) without the RAR codec package. See the spec.
 
 ---
@@ -1033,7 +1035,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     env:
       # Makes the Windows `py` launcher (used by the install scripts) pick the
       # Python that setup-python installed instead of the newest preinstalled.
