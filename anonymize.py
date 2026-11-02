@@ -38,6 +38,10 @@ import time
 from pathlib import Path
 from typing import NamedTuple, Optional
 
+# Single source of the version. The release workflow refuses a tag that
+# is not "v" + this value (release/versioning.py reads it with a regex).
+__version__ = "1.0.0"
+
 # ------------------------------------------------------------
 # Supported file types
 # ------------------------------------------------------------
@@ -1802,6 +1806,17 @@ def prompt_output_directory(default_output: Path) -> Path:
     return browse_for_directory(start)
 
 
+def command_name() -> str:
+    """
+    How the user starts this program, for usage hints: the packaged,
+    PyInstaller-frozen program is the `anonimize` command, the source file
+    is run through Python.
+    """
+    if getattr(sys, "frozen", False):
+        return "anonimize"
+    return "python anonymize.py"
+
+
 def run_interactive_mode() -> None:
     try:
         import questionary
@@ -1816,7 +1831,7 @@ def run_interactive_mode() -> None:
     if not sys.stdin.isatty():
         print(
             "Interactive mode needs a terminal. Use: "
-            "python anonymize.py <source> <replacements.json>",
+            f"{command_name()} <source> <replacements.json>",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1858,6 +1873,22 @@ def run_interactive_mode() -> None:
     run_anonymization(source_dir, replacements_file, output_root)
 
 
+class CheckToolsAction(argparse.Action):
+    """
+    --check-tools: prints the optional-tools report and exits, like
+    argparse's own --version, so it works without the positional
+    arguments. Package managers point users here after installing.
+    """
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("default", argparse.SUPPRESS)
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        report_optional_tools()
+        parser.exit()
+
+
 def main():
     if len(sys.argv) == 1:
         run_interactive_mode()
@@ -1885,6 +1916,21 @@ def main():
         help=(
             "Optional output directory. "
             "Default: <source-parent>/anonimized/<source-name>"
+        ),
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"anonimize {__version__}",
+    )
+
+    parser.add_argument(
+        "--check-tools",
+        action=CheckToolsAction,
+        help=(
+            "Show whether the optional OCR and .rar tools are available, "
+            "then exit"
         ),
     )
 
