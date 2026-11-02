@@ -1,0 +1,90 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # Makes the Windows `py` launcher (used by the install scripts) pick the
+      # Python that setup-python installed instead of the newest preinstalled.
+      PY_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Keep tesseract-ocr and unar in sync with scripts/test-in-docker.sh,
+          # which reproduces this Linux job locally.
+          sudo apt-get install -y tesseract-ocr unar
+
+      - name: Install system tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract unar
+
+      # 7-Zip, which handles .rar here, ships on the Windows image.
+      - name: Install system tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install tesseract -y --no-progress
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Informational: shows where each tool resolves on this runner so a
+      # first-run failure can be read without guessing. The same lines are
+      # also emitted as notice annotations, which can be read without signing
+      # in to GitHub (the raw log cannot). On the Windows image 7z IS on PATH
+      # (a Chocolatey shim), so the real RAR test hides rarfile's PATH-based
+      # 7z/7zz/bsdtar lookup and proves the default-folder fallback instead.
+      - name: Show where the optional tools resolve
+        shell: bash
+        run: |
+          for tool in tesseract unar unrar 7z 7zz bsdtar; do
+            where="$(command -v "$tool" || echo "(not on PATH)")"
+            printf '%-10s%s\n' "$tool" "$where"
+            echo "::notice title=tool lookup::$tool = $where"
+          done
+          report="$(python -c "import anonymize; anonymize.report_optional_tools()" 2>&1 || true)"
+          echo "$report"
+          echo "$report" | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              echo "::notice title=report_optional_tools::$line"
+            fi
+          done
+
+      - name: Run tests (fails if any test is skipped)
+        shell: bash
+        run: bash scripts/run-tests.sh
+
+      - name: Smoke-test scripts/install.sh
+        shell: bash
+        run: bash scripts/install.sh
+
+      - name: Smoke-test scripts/install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\install.ps1

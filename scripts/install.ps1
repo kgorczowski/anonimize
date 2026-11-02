@@ -34,3 +34,21 @@ $requirementsPath = Join-Path $PSScriptRoot "..\requirements.txt"
 
 Write-Host "Using $(& $pythonExe --version) ($pythonExe)"
 & $pythonExe -m pip install -r $requirementsPath
+$pipExit = $LASTEXITCODE
+
+# Informational only: never fail the install over a missing optional tool.
+Write-Host ""
+try {
+    Push-Location -LiteralPath (Join-Path $PSScriptRoot "..")
+    try {
+        & $pythonExe -c "import anonymize; anonymize.report_optional_tools()"
+    } finally {
+        Pop-Location
+    }
+} catch {
+    Write-Host "Could not check optional system tools: $_"
+}
+
+# The check above runs native commands; give the script pip's exit code back,
+# also under `powershell -File`, where a script otherwise exits 0.
+exit $pipExit

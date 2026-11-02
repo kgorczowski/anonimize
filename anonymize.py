@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 #
 # Optional system dependencies (beyond `pip install -r requirements.txt`):
-#   - .rar archives: the 'unrar' (or 'unar'/'bsdtar') tool must be on
-#     PATH. Windows: winget install RARLab.WinRAR
+#   - .rar archives: needs `unar` or `unrar` (on Windows, 7-Zip or WinRAR
+#     also work). Not recommended: bsdtar can fail on compressed RAR5
+#     archives, and Debian/Ubuntu's 7z cannot decompress RAR at all unless
+#     the non-free 7zip-rar (or p7zip-rar) package is installed.
+#     macOS: brew install unar. Linux: sudo apt install unar.
+#     Windows: winget install 7zip.7zip (or RARLab.WinRAR); found in its
+#     default install folder automatically, no PATH change needed.
 #   - Scanned PDFs (OCR): the Tesseract OCR engine must be installed.
-#     Windows: winget install UB-Mannheim.TesseractOCR
+#     macOS: brew install tesseract. Linux: sudo apt install tesseract-ocr.
+#     Windows: winget install UB-Mannheim.TesseractOCR (also found in its
+#     default install folder automatically).
 # Both are optional: without them, the affected archive/PDF is reported
 # as an error and the rest of the run continues normally.
+# scripts/install.sh and scripts/install.ps1 report which are missing.
 #
 # Known limitation: PII detection is regex-based and heuristic. In
 # particular, four-part version strings ("1.0.0.0" in .cs/.json/.xml or
@@ -810,6 +818,37 @@ def is_archive_file(path: Path) -> bool:
     return classify_archive(path) is not None
 
 
+# rarfile only looks for its extraction tools on PATH, and neither the
+# WinRAR nor the 7-Zip Windows installer adds itself to PATH. Same problem
+# (and same remedy) as TESSERACT_COMMON_PATHS. Each entry is the rarfile
+# module setting to point at the tool, and the tool's default location.
+RAR_TOOL_COMMON_PATHS = (
+    ("UNRAR_TOOL", r"C:\Program Files\WinRAR\UnRAR.exe"),
+    ("UNRAR_TOOL", r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
+    ("SEVENZIP_TOOL", r"C:\Program Files\7-Zip\7z.exe"),
+    ("SEVENZIP_TOOL", r"C:\Program Files (x86)\7-Zip\7z.exe"),
+)
+
+
+def locate_rar_tool():
+    """
+    Returns (rarfile_setting_name, path) for a RAR-capable tool that is
+    installed but not on PATH, so rarfile can be pointed at it directly.
+    Returns None if unrar or unar is already on PATH (rarfile finds those
+    itself), or if no known install location has a tool. bsdtar and a
+    distro 7z without the non-free RAR codec are deliberately not
+    considered: they can fail on compressed RAR5 archives.
+    """
+    if shutil.which("unrar") or shutil.which("unar"):
+        return None
+
+    for setting, candidate in RAR_TOOL_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return setting, candidate
+
+    return None
+
+
 def extract_archive(source: Path, dest_dir: Path) -> None:
     kind = classify_archive(source)
 
@@ -868,19 +907,67 @@ def extract_archive(source: Path, dest_dir: Path) -> None:
             )
 
         try:
+            located = locate_rar_tool()
+
+            if located is not None:
+                setting, path = located
+                setattr(rarfile, setting, path)
+                rarfile.tool_setup(force=True)
+
             with rarfile.RarFile(source) as archive:
                 archive.extractall(dest_dir)
         except rarfile.NeedFirstVolume:
             raise
         except rarfile.Error as exc:
             raise RuntimeError(
-                "Cannot extract RAR archive. This usually means the "
-                "'unrar' tool is not installed and on PATH, or the "
-                f"archive is corrupt/password-protected: {exc}"
+                "Cannot extract RAR archive. Extracting .rar needs a "
+                "RAR-capable tool: unrar or unar (on Windows also WinRAR "
+                "or 7-Zip). It was not found, or the archive is "
+                f"corrupt/password-protected: {exc}"
             ) from exc
         return
 
     raise ValueError(f"Not a supported archive: {source}")
+
+
+def report_optional_tools() -> None:
+    """
+    Prints whether the optional system tools (Tesseract OCR and a RAR
+    extractor) are available - on PATH or in the default Windows install
+    folders the product itself falls back to - with an install command for
+    this OS for each one that is missing. scripts/install.sh and
+    scripts/install.ps1 call this, so the detection exists once here
+    instead of being re-implemented (and disagreeing) in each shell.
+    """
+    if sys.platform == "darwin":
+        install_tesseract = "brew install tesseract"
+        install_rar = "brew install unar"
+    elif sys.platform == "win32":
+        install_tesseract = "winget install UB-Mannheim.TesseractOCR"
+        install_rar = "winget install 7zip.7zip"
+    else:
+        install_tesseract = "sudo apt install tesseract-ocr"
+        install_rar = "sudo apt install unar"
+
+    rar_fallback = locate_rar_tool()
+
+    tesseract = shutil.which("tesseract") or locate_tesseract()
+    rar = (
+        shutil.which("unrar")
+        or shutil.which("unar")
+        or (rar_fallback[1] if rar_fallback else None)
+    )
+
+    print("Optional system tools:")
+
+    for label, found, install in (
+        ("Tesseract OCR (scanned PDF pages)", tesseract, install_tesseract),
+        ("RAR extraction (.rar archives)", rar, install_rar),
+    ):
+        if found:
+            print(f"  [ok]      {label}: {found}")
+        else:
+            print(f"  [missing] {label} - install with: {install}")
 
 
 # ------------------------------------------------------------
@@ -917,7 +1004,9 @@ class ProgressBar:
 
         elapsed = time.monotonic() - self.start_time
 
-        if self.current > 0:
+        # Windows + Python < 3.13: the monotonic clock ticks every ~15.6 ms,
+        # so a fast first file can leave elapsed at exactly zero.
+        if self.current > 0 and elapsed > 0:
             rate = self.current / elapsed
             remaining = (self.total - self.current) / rate
         else:
@@ -1276,63 +1365,16 @@ def process_file(
 # Main
 # ------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Recursively anonymize text/code files and convert "
-            "DOCX/XLSX/PPTX files to Markdown."
-        )
-    )
-
-    parser.add_argument(
-        "source",
-        help="Source directory",
-    )
-
-    parser.add_argument(
-        "replacements",
-        help="JSON file containing replacement mappings",
-    )
-
-    parser.add_argument(
-        "--output",
-        help=(
-            "Optional output directory. "
-            "Default: <source-parent>/anonimized/<source-name>"
-        ),
-    )
-
-    args = parser.parse_args()
-
-    source_dir = Path(args.source).expanduser().resolve()
-    replacements_file = Path(args.replacements).expanduser().resolve()
-
-    if not source_dir.exists():
-        print(f"ERROR: source directory does not exist: {source_dir}")
-        sys.exit(1)
-
-    if not source_dir.is_dir():
-        print(f"ERROR: source path is not a directory: {source_dir}")
-        sys.exit(1)
-
-    if not replacements_file.exists():
-        print(f"ERROR: replacement file does not exist: {replacements_file}")
-        sys.exit(1)
-
+def run_anonymization(
+    source_dir: Path,
+    replacements_file: Path,
+    output_root: Path,
+) -> None:
     try:
         replacements = load_replacements(replacements_file)
     except Exception as exc:
         print(f"ERROR: cannot load replacement map: {exc}")
         sys.exit(1)
-
-    if args.output:
-        output_root = Path(args.output).expanduser().resolve()
-    else:
-        output_root = (
-            source_dir.parent
-            / "anonimized"
-            / source_dir.name
-        )
 
     # --------------------------------------------------------
     # PASS 1 - scan
@@ -1493,6 +1535,386 @@ def main():
     finally:
         for temp_dir in temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ------------------------------------------------------------
+# Interactive mode
+# ------------------------------------------------------------
+
+def browse_for_directory(start_path: Path) -> Path:
+    """
+    Lets the user navigate directories with arrow keys and Enter,
+    starting at start_path. Returns the chosen directory. Raises
+    KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    current = start_path.resolve()
+
+    while True:
+        try:
+            subdirs = sorted(
+                (p for p in current.iterdir() if p.is_dir()),
+                key=lambda p: p.name.lower(),
+            )
+        except PermissionError:
+            print(
+                f"WARNING: cannot list {current}: permission denied",
+                file=sys.stderr,
+            )
+            subdirs = []
+
+        choices = [
+            questionary.Choice(
+                title="[Select this folder]", value=("select", None)
+            )
+        ]
+
+        if current.parent != current:
+            choices.append(
+                questionary.Choice(title="..", value=("up", None))
+            )
+
+        choices.extend(
+            questionary.Choice(title=p.name, value=("enter", p))
+            for p in subdirs
+        )
+
+        answer = questionary.select(
+            f"Folder: {current}",
+            choices=choices,
+        ).ask()
+
+        if answer is None:
+            raise KeyboardInterrupt
+
+        action, target = answer
+
+        if action == "select":
+            return current
+        if action == "up":
+            current = current.parent
+        elif action == "enter":
+            current = target
+
+
+def browse_for_replacements_file(start_path: Path) -> Path:
+    """
+    Lets the user navigate to an existing .json file, or create a new
+    one, starting at start_path. Returns the chosen/created file's path.
+    Raises KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    current = start_path.resolve()
+
+    while True:
+        try:
+            entries = sorted(
+                current.iterdir(), key=lambda p: p.name.lower()
+            )
+        except PermissionError:
+            print(
+                f"WARNING: cannot list {current}: permission denied",
+                file=sys.stderr,
+            )
+            entries = []
+
+        subdirs = [p for p in entries if p.is_dir()]
+        json_files = [
+            p
+            for p in entries
+            if p.is_file() and p.suffix.lower() == ".json"
+        ]
+
+        choices = [
+            questionary.Choice(
+                title="+ Create new replacements file here",
+                value=("create", None),
+            )
+        ]
+
+        if current.parent != current:
+            choices.append(
+                questionary.Choice(title="..", value=("up", None))
+            )
+
+        choices.extend(
+            questionary.Choice(title=f"{p.name}/", value=("enter", p))
+            for p in subdirs
+        )
+        choices.extend(
+            questionary.Choice(title=p.name, value=("choose", p))
+            for p in json_files
+        )
+
+        answer = questionary.select(
+            f"Replacements file: {current}",
+            choices=choices,
+        ).ask()
+
+        if answer is None:
+            raise KeyboardInterrupt
+
+        action, target = answer
+
+        if action == "create":
+            name = questionary.text(
+                "File name (e.g. replacements.json):"
+            ).ask()
+
+            if name is None:
+                raise KeyboardInterrupt
+            if not name:
+                continue
+
+            new_path = current / name
+            if not new_path.exists():
+                new_path.write_text("{}", encoding="utf-8")
+            return new_path
+
+        if action == "up":
+            current = current.parent
+        elif action == "enter":
+            current = target
+        elif action == "choose":
+            return target
+
+
+def manage_replacements_dictionary(replacements_path: Path) -> dict:
+    """
+    Interactive Add/Edit/Delete/Continue loop over the dictionary stored
+    at replacements_path. Every change is written back to the file
+    immediately. Returns the current dictionary when the user selects
+    Continue. Raises KeyboardInterrupt if the user cancels (Ctrl-C).
+    """
+    import questionary
+
+    try:
+        data = json.loads(replacements_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("replacements file must contain a JSON object.")
+    except Exception as exc:
+        print(f"ERROR: cannot load replacement map: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    def save():
+        replacements_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    while True:
+        print()
+        print(f"Dictionary: {replacements_path}")
+        if data:
+            for key, value in data.items():
+                print(f"  {key!r} -> {value!r}")
+        else:
+            print("  (empty)")
+        print()
+
+        action = questionary.select(
+            "What next?",
+            choices=["Add entry", "Edit entry", "Delete entry", "Continue"],
+        ).ask()
+
+        if action is None:
+            raise KeyboardInterrupt
+
+        if action == "Continue":
+            return data
+
+        if action == "Add entry":
+            key = questionary.text("Key (text to find):").ask()
+            if key is None:
+                raise KeyboardInterrupt
+            if not key:
+                continue
+
+            value = questionary.text("Value (replacement):").ask()
+            if value is None:
+                raise KeyboardInterrupt
+
+            data[key] = value
+            save()
+            continue
+
+        if not data:
+            print("No entries yet.")
+            continue
+
+        if action == "Edit entry":
+            key = questionary.select(
+                "Which entry?", choices=list(data)
+            ).ask()
+            if key is None:
+                raise KeyboardInterrupt
+
+            value = questionary.text(
+                f"New value for {key!r}:", default=data[key]
+            ).ask()
+            if value is None:
+                raise KeyboardInterrupt
+
+            data[key] = value
+            save()
+        elif action == "Delete entry":
+            key = questionary.select(
+                "Which entry?", choices=list(data)
+            ).ask()
+            if key is None:
+                raise KeyboardInterrupt
+
+            del data[key]
+            save()
+
+
+def prompt_output_directory(default_output: Path) -> Path:
+    """
+    Asks whether to use default_output; if declined, lets the user pick
+    a different folder via browse_for_directory, starting from its
+    parent if that exists, or the current directory otherwise (the
+    default output's parent -- typically ".../anonimized/" -- usually
+    doesn't exist yet at this point; it's only created later, inside
+    run_anonymization, and browse_for_directory needs a real directory
+    to start listing from). Raises KeyboardInterrupt if the user cancels
+    (Ctrl-C).
+    """
+    import questionary
+
+    use_default = questionary.confirm(
+        f"Use default output folder? {default_output}",
+        default=True,
+    ).ask()
+
+    if use_default is None:
+        raise KeyboardInterrupt
+
+    if use_default:
+        return default_output
+
+    start = (
+        default_output.parent
+        if default_output.parent.exists()
+        else Path.cwd()
+    )
+    return browse_for_directory(start)
+
+
+def run_interactive_mode() -> None:
+    try:
+        import questionary
+    except ImportError:
+        print(
+            "Interactive mode requires questionary. Install it with: "
+            "pip install questionary",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not sys.stdin.isatty():
+        print(
+            "Interactive mode needs a terminal. Use: "
+            "python anonymize.py <source> <replacements.json>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print("=== Anonimize - interactive mode ===")
+
+    try:
+        replacements_file = browse_for_replacements_file(Path.cwd())
+        manage_replacements_dictionary(replacements_file)
+
+        source_dir = browse_for_directory(Path.cwd())
+
+        default_output = (
+            source_dir.parent / "anonimized" / source_dir.name
+        )
+        output_root = prompt_output_directory(default_output)
+
+        replacements_count = len(
+            json.loads(replacements_file.read_text(encoding="utf-8"))
+        )
+
+        confirmed = questionary.confirm(
+            f"Anonymize {source_dir} -> {output_root} "
+            f"using {replacements_count} dictionary entries?",
+            default=True,
+        ).ask()
+
+        if confirmed is None:
+            raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        print()
+        print("Cancelled.")
+        return
+
+    if not confirmed:
+        print("Cancelled.")
+        return
+
+    run_anonymization(source_dir, replacements_file, output_root)
+
+
+def main():
+    if len(sys.argv) == 1:
+        run_interactive_mode()
+        return
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Recursively anonymize text/code files and convert "
+            "DOCX/XLSX/PPTX files to Markdown."
+        )
+    )
+
+    parser.add_argument(
+        "source",
+        help="Source directory",
+    )
+
+    parser.add_argument(
+        "replacements",
+        help="JSON file containing replacement mappings",
+    )
+
+    parser.add_argument(
+        "--output",
+        help=(
+            "Optional output directory. "
+            "Default: <source-parent>/anonimized/<source-name>"
+        ),
+    )
+
+    args = parser.parse_args()
+
+    source_dir = Path(args.source).expanduser().resolve()
+    replacements_file = Path(args.replacements).expanduser().resolve()
+
+    if not source_dir.exists():
+        print(f"ERROR: source directory does not exist: {source_dir}")
+        sys.exit(1)
+
+    if not source_dir.is_dir():
+        print(f"ERROR: source path is not a directory: {source_dir}")
+        sys.exit(1)
+
+    if not replacements_file.exists():
+        print(f"ERROR: replacement file does not exist: {replacements_file}")
+        sys.exit(1)
+
+    if args.output:
+        output_root = Path(args.output).expanduser().resolve()
+    else:
+        output_root = (
+            source_dir.parent
+            / "anonimized"
+            / source_dir.name
+        )
+
+    run_anonymization(source_dir, replacements_file, output_root)
 
 
 if __name__ == "__main__":

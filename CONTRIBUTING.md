@@ -9,9 +9,20 @@ Run the setup script for your platform:
 - PowerShell (Windows): `.\scripts\install.ps1`
 - bash (macOS / Linux / Git Bash): `./scripts/install.sh`
 
-Both just install `requirements.txt` with whichever Python interpreter they
-find, so `pip install -r requirements.txt` works too if you already know
-your interpreter is set up correctly.
+Both install `requirements.txt` with whichever Python interpreter they find
+(so `pip install -r requirements.txt` works too if you already know your
+interpreter is set up correctly), then report whether the optional system
+tools are available — Tesseract for scanned PDFs and a `.rar` extractor —
+with the install command for your OS when one is missing. Tools installed
+in their default Windows folders count as available; no PATH change needed.
+
+Homebrew Python on macOS and the system Python on Debian/Ubuntu are
+"externally managed" (PEP 668) and refuse `pip install` outside a virtual
+environment, so `./scripts/install.sh` fails there on its first step: create
+one first with `python3 -m venv .venv` then `. .venv/bin/activate` (on
+Debian/Ubuntu install the venv module before that with
+`sudo apt install python3-venv`), or on Windows with `py -m venv .venv` then
+`.venv\Scripts\Activate.ps1`. `.venv/` is already gitignored.
 
 ### Windows: `python` opens the Microsoft Store instead of running
 
@@ -47,3 +58,28 @@ If `gh` isn't recognized afterward, it's a PATH problem:
 - **Linux** — distro package managers (`apt`, `dnf`, `pacman`) add it to
   PATH automatically. A manual tarball install needs the same `export
   PATH=...` line as macOS, in `~/.bashrc` / `~/.zshrc`.
+
+### Tests and continuous integration
+
+`python -m pytest` runs the suite normally; tests that need an optional
+system tool (Tesseract, a `.rar` extractor) skip themselves when it is
+missing. CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu, macOS
+and Windows with those tools installed, through `scripts/run-tests.sh`,
+which additionally fails if *any* test was skipped — so a green run means
+the OCR and RAR paths really ran on every OS. The same script works
+locally: `bash scripts/run-tests.sh`. The interpreter is chosen with the
+`PYTHON` variable and defaults to `python`, which does not exist (or is the
+Microsoft Store stub) on a default Windows machine and may be missing on
+macOS or Debian/Ubuntu, so set it there:
+
+```bash
+PYTHON=py bash scripts/run-tests.sh       # Windows (Git Bash)
+PYTHON=python3 bash scripts/run-tests.sh  # macOS / Linux
+```
+
+To reproduce the Linux job on your machine (needs Docker and bash, so on
+Windows run it from Git Bash or WSL):
+
+```bash
+bash scripts/test-in-docker.sh
+```

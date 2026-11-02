@@ -3,3 +3,6 @@
 # (stray \r treated as part of each line: "invalid option", "command not
 # found", syntax errors on function definitions).
 *.sh text eol=lf
+
+# Binary test fixtures must never be touched by line-ending conversion.
+*.rar binary

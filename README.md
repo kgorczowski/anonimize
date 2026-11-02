@@ -11,14 +11,16 @@ A command-line tool that recursively walks a directory, anonymizes text and code
 pip install -r requirements.txt
 ```
 
+On macOS (Homebrew Python) and Debian/Ubuntu, `pip` refuses to install into the system Python (it is "externally managed"), so create a virtual environment first: `python3 -m venv .venv` then `. .venv/bin/activate` (on Debian/Ubuntu run `sudo apt install python3-venv` before that). On Windows: `py -m venv .venv` then `.venv\Scripts\Activate.ps1`.
+
 Two dependencies are optional system tools (not pip packages), needed only for specific file types:
 
-| Needed for | Tool | Windows install |
-|---|---|---|
-| `.rar` archives | `unrar` (or `unar`/`bsdtar`) on PATH | `winget install RARLab.WinRAR` |
-| Scanned/OCR'd PDF pages | Tesseract OCR engine | `winget install UB-Mannheim.TesseractOCR` |
+| Needed for | Tool | macOS | Linux (Debian/Ubuntu) | Windows |
+|---|---|---|---|---|
+| `.rar` archives | `unar` or `unrar` (Windows: 7-Zip or WinRAR) | `brew install unar` | `sudo apt install unar` | `winget install 7zip.7zip` (or `RARLab.WinRAR`) |
+| Scanned/OCR'd PDF pages | Tesseract OCR engine | `brew install tesseract` | `sudo apt install tesseract-ocr` | `winget install UB-Mannheim.TesseractOCR` |
 
-Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. If Tesseract is installed but not found, `anonymize.py` also checks the common Windows install locations directly, so it works even before you open a new terminal.
+Without them, the affected archive/PDF is reported as an error (and excluded from the output — see below) rather than crashing the run. On Windows you don't need to touch PATH: Tesseract, 7-Zip and WinRAR are also looked up in their default install folders, so they work even before you open a new terminal. On macOS and Linux prefer `unar` or `unrar`: `bsdtar` can fail on compressed RAR5 archives, and Debian/Ubuntu's `7z` cannot decompress RAR at all unless the non-free `7zip-rar` (or `p7zip-rar`) package is installed. `scripts/install.sh` / `scripts/install.ps1` print which of these tools are still missing.
 
 ## Usage
 
@@ -37,6 +39,17 @@ python anonymize.py <source> <replacements.json> [--output <dir>]
 ```bash
 python anonymize.py ./client-project ./replacements.json --output ./anonymized-output
 ```
+
+### Interactive mode
+
+Running `python anonymize.py` with **no arguments** starts an interactive
+wizard instead: pick or create a replacements file, add/edit/delete its
+entries (each change is saved immediately), pick a source folder with an
+arrow-key directory browser, confirm (or change) the output folder, and
+run. Requires the `questionary` package (already in `requirements.txt`);
+if it isn't installed, the no-argument form prints an install hint and
+exits, while `python anonymize.py <source> <replacements.json>` keeps
+working exactly as before.
 
 ## Replacements file format
 
