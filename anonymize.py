@@ -1889,7 +1889,23 @@ class CheckToolsAction(argparse.Action):
         parser.exit()
 
 
+def use_utf8_output() -> None:
+    """
+    The progress bar prints block characters. A Windows console shows them,
+    but redirected output (`> log.txt`, a pipe) gets the ANSI code page,
+    which cannot encode them: the run would die with UnicodeEncodeError
+    after the first file. UTF-8 encodes everything; errors="replace" also
+    covers undecodable file names (surrogate escapes) printed on Linux.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    use_utf8_output()
+
     if len(sys.argv) == 1:
         run_interactive_mode()
         return
