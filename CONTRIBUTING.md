@@ -83,3 +83,86 @@ Windows run it from Git Bash or WSL):
 ```bash
 bash scripts/test-in-docker.sh
 ```
+
+## Releasing
+
+Releases are built and published by `.github/workflows/release.yml` from a
+version tag. The version lives in one place: `__version__` in
+`anonymize.py`, and the workflow refuses a tag that is not `v` + that value.
+
+### Cutting a release
+
+```bash
+# 1. set __version__ = "1.2.0" in anonymize.py, then:
+git commit -m "release: 1.2.0" anonymize.py   # only this file: never -a
+git tag v1.2.0
+git push origin main v1.2.0
+```
+
+Commit only `anonymize.py`: `git commit -a` would also pick up a locally
+edited `replacements.json`, which holds real client names.
+
+The workflow then:
+
+1. runs the test suite on all three OSes;
+2. freezes the program with PyInstaller on Windows, macOS (arm64 and Intel)
+   and Linux (in `ubuntu:22.04`), builds the `.deb`, and runs
+   `release/smoke_test.py` against every built program: a real run over
+   every file type that must end with zero errors and no dictionary term
+   or PII in the output;
+3. installs the `.deb` into fresh Ubuntu 22.04, Ubuntu 24.04 and Debian 12
+   containers and smoke-tests it there;
+4. publishes a GitHub Release as a **pre-release**, with the archives, the
+   `.deb`, `SHA256SUMS` and generated notes (install commands and the commit
+   subjects since the previous release);
+5. installs that release through Homebrew (arm64 and Intel), Scoop and
+   winget and smoke-tests each installed command;
+6. only then marks the release as "Latest" and commits the updated
+   `Formula/anonimize.rb`, `bucket/anonimize.json` and
+   `release/winget/manifests/…` to `main` (as `github-actions[bot]`).
+
+So `brew upgrade` and `scoop update` only ever see versions that installed
+and ran cleanly everywhere. Run `git pull` after a release to get the bot's
+manifest commit before committing on `main` again. If a job fails, fix the
+cause and release the next patch version; re-running the failed jobs of the
+same tag is also safe (the publish step updates an existing release).
+
+### Rehearsing a release
+
+A pre-release tag runs everything up to and including the package-manager
+installs, but never becomes "Latest" and never touches `main`:
+
+```bash
+# __version__ = "1.2.0-rc.1"
+git commit -m "release: 1.2.0-rc.1" anonymize.py   # only this file: never -a
+git tag v1.2.0-rc.1
+git push origin main v1.2.0-rc.1
+```
+
+Pull requests that change `anonymize.py`, `requirements.txt` or `release/`
+run the build-and-smoke-test part as a dry run, so packaging problems show
+up before merging.
+
+### Reproducing the Linux build locally
+
+Needs Docker and bash (on Windows: Git Bash or WSL):
+
+```bash
+bash release/build-linux-in-docker.sh       # dist/*.tar.gz, dist/*.deb
+bash release/test-deb-in-docker.sh ubuntu:24.04
+```
+
+On Windows or macOS, build for the current platform in a virtual
+environment with `requirements.txt` and `release/requirements-build.txt`
+installed: `python release/build.py`, then
+`python release/smoke_test.py fixtures build/fx` and
+`python release/smoke_test.py check --fixtures build/fx --version <version> -- <built program>`.
+
+### Publishing to winget
+
+`winget install anonimize` by name needs the manifest in Microsoft's
+community repository. Each release leaves a validated manifest in
+`release/winget/manifests/k/kgorczowski/anonimize/<version>/`; to submit it,
+copy that folder to the same path in a fork of
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) and open a
+pull request there (or use `wingetcreate submit <folder>`).
