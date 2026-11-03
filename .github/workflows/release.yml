@@ -1,0 +1,385 @@
+name: release
+
+# Builds the packaged program on every platform and tests it the way users
+# run it. On a version tag it also publishes a GitHub Release (first as a
+# pre-release), installs that release through Homebrew, Scoop and winget,
+# and only then marks it "Latest" and commits the package manifests to
+# main. Pull requests that touch the program or the packaging get the
+# build-and-test part as a dry run. See CONTRIBUTING.md, "Releasing".
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - anonymize.py
+      - requirements.txt
+      - "release/**"
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-version:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag must equal "v" + __version__ in anonymize.py
+        run: python3 release/render.py check-tag "$GITHUB_REF_NAME"
+
+  tests:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: check-version
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: [check-version, tests]
+    # The two jobs above only run for tags. A skipped `needs` would skip
+    # this job too, so run unless something actually failed.
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            program: build/pyinstaller/dist/anonimize.exe
+          - os: macos-15
+            platform: macos-arm64
+            program: build/pyinstaller/dist/anonimize/anonimize
+          - os: macos-15-intel
+            platform: macos-x64
+            program: build/pyinstaller/dist/anonimize/anonimize
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The smoke test exercises OCR and .rar, as in tests.yml.
+      - name: Install system tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract unar
+
+      # 7-Zip, which handles .rar here, ships on the Windows image.
+      - name: Install system tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install tesseract -y --no-progress
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt -r release/requirements-build.txt
+
+      - name: Build
+        run: python release/build.py
+
+      - name: Smoke-test the built program
+        shell: bash
+        run: |
+          python release/smoke_test.py fixtures "$RUNNER_TEMP/fixtures"
+          python release/smoke_test.py check --fixtures "$RUNNER_TEMP/fixtures" \
+            --version "$(python release/render.py version)" -- "${{ matrix.program }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: asset-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  build-linux:
+    name: build linux-x64
+    needs: [check-version, tests]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Builds in ubuntu:22.04 (oldest supported glibc), builds the .deb and
+      # smoke-tests the program; the same script runs locally.
+      - name: Build and smoke-test in ubuntu:22.04
+        run: bash release/build-linux-in-docker.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: asset-linux-x64
+          path: dist/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: smoke-fixtures
+          path: build/fixtures/smoke-fixtures
+          if-no-files-found: error
+
+  deb:
+    name: install .deb on ${{ matrix.image }}
+    needs: build-linux
+    # Skips propagate through `needs`; see the build job.
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: asset-linux-x64
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: smoke-fixtures
+          path: build/fixtures/smoke-fixtures
+
+      - name: Install with apt in a fresh container and smoke-test
+        run: bash release/test-deb-in-docker.sh "${{ matrix.image }}"
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, build-linux, deb]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # All tags and history: the notes list commits since the last release.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: asset-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release notes
+        run: python3 release/render.py notes --tag "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+
+      # Published as a pre-release: "Latest" only moves after the
+      # package-manager installs below succeeded (promote job).
+      - name: Create the GitHub Release, or update it on a re-run
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease \
+              --title "anonimize ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sums
+          path: dist/SHA256SUMS
+
+  verify-brew:
+    name: brew install on ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sums
+          path: sums
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: smoke-fixtures
+          path: fixtures
+
+      # The formula is rendered from the published assets but not yet
+      # committed, so install it from a throwaway local tap.
+      - name: Install through Homebrew
+        run: |
+          python release/render.py manifests --sums sums/SHA256SUMS --out "$RUNNER_TEMP/m"
+          brew tap-new --no-git local/anonimize
+          cp "$RUNNER_TEMP/m/Formula/anonimize.rb" "$(brew --repository local/anonimize)/Formula/"
+          brew install local/anonimize/anonimize
+          brew test local/anonimize/anonimize
+
+      - name: Smoke-test the installed command
+        run: |
+          python release/smoke_test.py check --fixtures fixtures \
+            --version "$(python release/render.py version)" -- anonimize
+
+  verify-scoop:
+    name: scoop install
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sums
+          path: sums
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: smoke-fixtures
+          path: fixtures
+
+      # Scoop only suggests Tesseract; the smoke test needs it.
+      - name: Install Tesseract
+        shell: pwsh
+        run: choco install tesseract -y --no-progress
+
+      - name: Install Scoop, then anonimize from this release's manifest
+        shell: pwsh
+        run: |
+          python release/render.py manifests --sums sums/SHA256SUMS --out "$env:RUNNER_TEMP\m"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile "$env:RUNNER_TEMP\install-scoop.ps1"
+          & "$env:RUNNER_TEMP\install-scoop.ps1" -RunAsAdmin
+          $shims = "$env:USERPROFILE\scoop\shims"
+          $env:PATH = "$shims;$env:PATH"
+          $shims | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          scoop install "$env:RUNNER_TEMP\m\bucket\anonimize.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Smoke-test the installed command
+        shell: bash
+        run: |
+          python release/smoke_test.py check --fixtures fixtures \
+            --version "$(python release/render.py version)" -- anonimize
+
+  verify-winget:
+    name: winget install
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sums
+          path: sums
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: smoke-fixtures
+          path: fixtures
+
+      - name: Install Tesseract
+        shell: pwsh
+        run: choco install tesseract -y --no-progress
+
+      # Installing from a local manifest is an admin-only winget setting.
+      # It is enabled here on a throwaway runner, never on a user's machine.
+      - name: Validate and install this release's winget manifest
+        shell: pwsh
+        run: |
+          python release/render.py manifests --sums sums/SHA256SUMS --out "$env:RUNNER_TEMP\m"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $manifest = Get-ChildItem "$env:RUNNER_TEMP\m\release\winget\manifests\k\kgorczowski\anonimize" -Directory | Select-Object -First 1
+          winget validate --manifest $manifest.FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          winget settings --enable LocalManifestFiles
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          winget install --manifest $manifest.FullName --accept-source-agreements --accept-package-agreements --disable-interactivity
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Links" | Format-Table Name, LinkType, Target
+
+      # Through winget's command link on purpose: the link is why the
+      # Windows build is onefile (see release/build.py).
+      - name: Smoke-test through winget's command link
+        shell: bash
+        run: |
+          python release/smoke_test.py check --fixtures fixtures \
+            --version "$(python release/render.py version)" \
+            -- "$LOCALAPPDATA/Microsoft/WinGet/Links/anonimize.exe"
+
+  promote:
+    # Pre-releases (tags with "-", e.g. v1.0.0-rc.1) stop before this job,
+    # so the whole pipeline can be rehearsed without touching main.
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: [verify-brew, verify-scoop, verify-winget]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Mark the release as the latest one
+        run: gh release edit "$GITHUB_REF_NAME" --prerelease=false --latest
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sums
+          path: ${{ runner.temp }}/sums
+
+      # brew and Scoop read the formula and manifest from main. main's
+      # __version__ may already be newer than the tag, hence --version.
+      - name: Commit the package manifests to main
+        run: |
+          python3 release/render.py manifests --sums "$RUNNER_TEMP/sums/SHA256SUMS" \
+            --out . --version "${GITHUB_REF_NAME#v}"
+          git add Formula bucket release/winget
+          if git diff --cached --quiet; then
+            echo "Manifests already up to date."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "release: package manifests for $GITHUB_REF_NAME"
+          for _ in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1
