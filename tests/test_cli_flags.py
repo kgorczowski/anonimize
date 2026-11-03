@@ -61,3 +61,39 @@ def test_terminal_hint_names_the_frozen_command(monkeypatch, capsys):
     assert exited.value.code == 1
     assert "anonimize <source> <replacements.json>" in err
     assert "python anonymize.py" not in err
+
+
+# The frozen Linux program puts its bundled libraries first through
+# LD_LIBRARY_PATH; external tools started from it (tesseract, unar, 7z)
+# inherited that and loaded the bundled, older libstdc++ ("GLIBCXX_3.4.32
+# not found" on Ubuntu 24.04).
+def test_frozen_program_gives_child_processes_the_original_library_path(
+    monkeypatch,
+):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib/anonimize/_internal")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/opt/users/own/lib")
+
+    anonymize.restore_child_library_path()
+
+    assert anonymize.os.environ["LD_LIBRARY_PATH"] == "/opt/users/own/lib"
+
+
+def test_frozen_program_drops_a_library_path_the_user_never_set(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib/anonimize/_internal")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    anonymize.restore_child_library_path()
+
+    assert "LD_LIBRARY_PATH" not in anonymize.os.environ
+
+
+def test_source_program_leaves_the_library_path_alone(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/somewhere")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    anonymize.restore_child_library_path()
+
+    assert anonymize.os.environ["LD_LIBRARY_PATH"] == "/somewhere"

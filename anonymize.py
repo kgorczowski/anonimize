@@ -30,6 +30,7 @@
 import argparse
 import concurrent.futures
 import json
+import os
 import re
 import shutil
 import sys
@@ -1817,6 +1818,26 @@ def command_name() -> str:
     return "python anonymize.py"
 
 
+def restore_child_library_path() -> None:
+    """
+    The frozen (PyInstaller) Linux program starts with LD_LIBRARY_PATH
+    pointing at its own bundled libraries. External tools started from it
+    -- tesseract, unar/unrar, 7z -- would inherit that and load the bundled
+    libstdc++, which is older than a newer system's (Ubuntu 24.04:
+    "GLIBCXX_3.4.32 not found", every scanned PDF fails). PyInstaller keeps
+    the user's own value in LD_LIBRARY_PATH_ORIG; give that back. Only this
+    process's environment changes, and the program itself is unaffected:
+    the dynamic loader read LD_LIBRARY_PATH when the process started.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    original = os.environ.get("LD_LIBRARY_PATH_ORIG")
+    if original is not None:
+        os.environ["LD_LIBRARY_PATH"] = original
+    else:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+
+
 def run_interactive_mode() -> None:
     try:
         import questionary
@@ -1905,6 +1926,7 @@ def use_utf8_output() -> None:
 
 def main():
     use_utf8_output()
+    restore_child_library_path()
 
     if len(sys.argv) == 1:
         run_interactive_mode()
