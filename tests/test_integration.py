@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 import sys
@@ -139,6 +140,29 @@ def _run_cli(monkeypatch, source_dir, replacements_file, output_root):
         ],
     )
     anonymize.main()
+
+
+def test_full_run_survives_output_redirected_to_a_legacy_code_page(
+    tmp_path, monkeypatch
+):
+    # Windows gives redirected output (`> log.txt`, a pipe) the ANSI code
+    # page, which cannot encode the progress bar's block characters: the
+    # run used to die with UnicodeEncodeError after the first file.
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "notes.txt").write_text("VM note", encoding="utf-8")
+    replacements_file = tmp_path / "replacements.json"
+    replacements_file.write_text('{"VM": "Company1"}', encoding="utf-8")
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    _run_cli(monkeypatch, source_dir, replacements_file, tmp_path / "out")
+
+    stdout.flush()
+    printed = stdout.buffer.getvalue().decode("utf-8")
+    assert "█" in printed
+    assert "Errors            : 0" in printed
 
 
 def test_classic_cli_works_without_questionary(tmp_path, monkeypatch):

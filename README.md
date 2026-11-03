@@ -2,7 +2,48 @@
 
 A command-line tool that recursively walks a directory, anonymizes text and code files (and folder/file names) by replacing sensitive strings with placeholders, converts Office documents and PDFs to Markdown before anonymizing them too, extracts archives so their contents get the same treatment, automatically redacts common PII (emails, phone numbers, PESEL, NIP, IBAN, card numbers, IP addresses) on top of the dictionary-based replacements, and blacks out images that look like they might be a logo or brand asset.
 
-## Requirements
+[![Latest release](https://img.shields.io/github/v/release/kgorczowski/anonimize)](https://github.com/kgorczowski/anonimize/releases/latest)
+
+## Installation
+
+Packages contain everything the tool needs, Python included. Every version is listed on the [releases page](https://github.com/kgorczowski/anonimize/releases); [`/releases/latest`](https://github.com/kgorczowski/anonimize/releases/latest) is the current one.
+
+**macOS** (Homebrew; also installs Tesseract OCR and `unar`):
+
+```bash
+brew tap kgorczowski/anonimize https://github.com/kgorczowski/anonimize
+brew install anonimize
+```
+
+**Windows** ([Scoop](https://scoop.sh)):
+
+```powershell
+scoop bucket add anonimize https://github.com/kgorczowski/anonimize
+scoop install anonimize
+```
+
+Scoop only *suggests* the optional tools; install them with `scoop install tesseract 7zip` (or `winget install UB-Mannheim.TesseractOCR 7zip.7zip`).
+
+**Debian / Ubuntu** (22.04 or newer, Debian 12 or newer): download `anonimize_<version>_amd64.deb` from the [latest release](https://github.com/kgorczowski/anonimize/releases/latest), then
+
+```bash
+sudo apt install ./anonimize_<version>_amd64.deb
+```
+
+apt also installs the recommended `tesseract-ocr` and `unar`.
+
+**Updating:** `brew upgrade anonimize`, `scoop update anonimize`, or install the newer `.deb` the same way.
+
+After installing, check which optional tools were found and which version you have:
+
+```bash
+anonimize --check-tools
+anonimize --version
+```
+
+**Manual download:** each release also has a plain archive per platform (`anonimize-<version>-windows-x64.zip`, `-macos-arm64.tar.gz`, `-macos-x64.tar.gz`, `-linux-x64.tar.gz`) and a `SHA256SUMS` file to verify them. Extract it and run `anonimize.exe` (Windows) or `anonimize/anonimize`. macOS blocks programs downloaded with a browser until you clear the quarantine flag: `xattr -dr com.apple.quarantine anonimize`.
+
+### From source
 
 - Python 3.9+
 - Dependencies from `requirements.txt` — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup scripts and Windows-specific `python`/`gh` PATH notes.
@@ -25,31 +66,36 @@ Without them, the affected archive/PDF is reported as an error (and excluded fro
 ## Usage
 
 ```bash
-python anonymize.py <source> <replacements.json> [--output <dir>]
+anonimize <source> <replacements.json> [--output <dir>]
 ```
+
+From source, run `python anonymize.py` instead of `anonimize`; everything else is the same.
 
 | Argument | Required | Description |
 |---|---|---|
 | `source` | yes | Source directory to scan recursively |
 | `replacements` | yes | Path to a JSON file mapping strings to replace with their anonymized value |
 | `--output` | no | Output directory. Defaults to `<source-parent>/anonimized/<source-name>` |
+| `--check-tools` | no | Show whether the optional OCR and `.rar` tools are available, then exit |
+| `--version` | no | Show the version, then exit |
 
 ### Example
 
 ```bash
-python anonymize.py ./client-project ./replacements.json --output ./anonymized-output
+anonimize ./client-project ./replacements.json --output ./anonymized-output
 ```
 
 ### Interactive mode
 
-Running `python anonymize.py` with **no arguments** starts an interactive
+Running `anonimize` (or `python anonymize.py`) with **no arguments** starts an interactive
 wizard instead: pick or create a replacements file, add/edit/delete its
 entries (each change is saved immediately), pick a source folder with an
 arrow-key directory browser, confirm (or change) the output folder, and
-run. Requires the `questionary` package (already in `requirements.txt`);
-if it isn't installed, the no-argument form prints an install hint and
-exits, while `python anonymize.py <source> <replacements.json>` keeps
-working exactly as before.
+run. The packages include everything it needs. From source it requires
+the `questionary` package (already in `requirements.txt`); if it isn't
+installed, the no-argument form prints an install hint and exits, while
+`python anonymize.py <source> <replacements.json>` keeps working exactly
+as before.
 
 ## Replacements file format
 

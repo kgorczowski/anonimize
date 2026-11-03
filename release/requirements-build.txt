@@ -1,0 +1,3 @@
+# Build tools for release/build.py; pinned so release builds are reproducible.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
