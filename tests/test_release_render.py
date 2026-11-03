@@ -49,8 +49,17 @@ def test_formula_points_each_cpu_at_its_asset():
     assert 'version "1.2.3"' in formula
     assert 'depends_on "tesseract" => :recommended' in formula
     assert 'depends_on "unar" => :recommended' in formula
-    assert "write_exec_script" in formula
     assert "--check-tools" in formula
+
+
+def test_formula_writes_the_launcher_into_bin():
+    # Pathname#write_exec_script is called on a directory and writes one
+    # script per target into it; called on bin/"anonimize" it turned that
+    # path into a folder ("bin/anonimize: is a directory" in v1.0.0-rc.1).
+    formula = render.render_formula("1.2.3", _sums("1.2.3"))
+
+    assert 'bin.write_exec_script libexec/"anonimize"' in formula
+    assert '(bin/"anonimize").write_exec_script' not in formula
 
 
 def test_scoop_manifest():

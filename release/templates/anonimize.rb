@@ -25,7 +25,7 @@ class Anonimize < Formula
   def install
     # PyInstaller onedir build: the program and its _internal folder.
     libexec.install Dir["*"]
-    (bin/"anonimize").write_exec_script libexec/"anonimize"
+    bin.write_exec_script libexec/"anonimize"
   end
 
   def caveats
