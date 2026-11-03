@@ -41,7 +41,7 @@ from typing import NamedTuple, Optional
 
 # Single source of the version. The release workflow refuses a tag that
 # is not "v" + this value (release/versioning.py reads it with a regex).
-__version__ = "1.0.0-rc.1"
+__version__ = "1.0.0-rc.2"
 
 # ------------------------------------------------------------
 # Supported file types
